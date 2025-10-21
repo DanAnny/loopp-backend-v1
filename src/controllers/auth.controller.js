@@ -12,7 +12,7 @@ function setRefreshCookie(res, token) {
     secure: config.env === "production", // true on Render (HTTPS). For local dev over http, set to false.
     sameSite: "none", 
     partitioned: true,                   // required for Vercel ↔ Render cross-site
-    path: "/auth/refresh",
+    path: "/api/auth/refresh",
     maxAge: 14 * 24 * 60 * 60 * 1000,    // 14 days
   });
 }
@@ -166,7 +166,7 @@ export const logout = async (req, res) => {
 
     // clear with same attributes
     res.clearCookie("refreshToken", {
-      path: "/auth/refresh",
+      path: "/api/auth/refresh",
       secure: config.env === "production",
       sameSite: "none",
       partitioned: true,
