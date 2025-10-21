@@ -35,7 +35,8 @@ app.use(
   cors({
     origin: [
       "http://localhost:5173",
-      "https://loopp-frontend-v1-zcup.vercel.app/",
+      "https://loopp-frontend-v1.vercel.app",
+      "https://loopp-frontend-v1-zcup.vercel.app",
     ],
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
@@ -56,7 +57,11 @@ app.use(
     resave: false,
     saveUninitialized: false,
     store: MongoStore.create({ mongoUrl: config.mongoURI, collectionName: "sessions" }),
-    cookie: { httpOnly: true, secure: config.env === "production", sameSite: "lax" },
+    cookie: {
+      httpOnly: true,
+      secure: true,         // required with SameSite=None
+      sameSite: "none",     // required for cross-site cookies
+    },
   })
 );
 
