@@ -5,11 +5,16 @@ import { fromReq } from "../services/audit.service.js";
 import { User } from "../models/User.js";
 import { config } from "../config/env.js";
 
+// Treat Render/HTTPS as prod for cookies
+const isProd =
+  process.env.NODE_ENV === "production" ||
+  process.env.RENDER === "true"; // Render sets this
+
 // Helper to set cross-site refresh cookie the SAME way everywhere
 function setRefreshCookie(res, token) {
   res.cookie("refreshToken", token, {
     httpOnly: true,
-    secure: config.env === "production", // true on Render (HTTPS). For local dev over http, set to false.
+    secure: true, // true on Render (HTTPS). For local dev over http, set to false.
     sameSite: "none", 
     partitioned: true,                   // required for Vercel ↔ Render cross-site
     path: "/api/auth/refresh",
@@ -167,7 +172,7 @@ export const logout = async (req, res) => {
     // clear with same attributes
     res.clearCookie("refreshToken", {
       path: "/api/auth/refresh",
-      secure: config.env === "production",
+      secure: true,
       sameSite: "none",
       partitioned: true,
       httpOnly: true,
