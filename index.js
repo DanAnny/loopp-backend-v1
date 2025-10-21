@@ -38,21 +38,30 @@ const ALLOWLIST = [
 // Trust Render/Heroku-style proxy so secure cookies work
 app.set("trust proxy", 1);
 
-// ===== CORS =====
-app.use(
-  cors({
-    origin(origin, cb) {
-      // Allow same-origin/instrumented/no-Origin requests (curl, Postman)
-      if (!origin) return cb(null, true);
-      cb(null, ALLOWLIST.includes(origin));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
-// Ensure preflights succeed
-app.options("*", cors());
+const corsOptions = {
+  origin(origin, cb) {
+    // Allow same-origin tools (curl/Postman) that send no Origin
+    if (!origin) return cb(null, true);
+    return cb(null, ALLOWLIST.includes(origin));
+    // If you prefer explicit rejection, use:
+    // return ALLOWLIST.includes(origin)
+    //   ? cb(null, true)
+    //   : cb(new Error("Not allowed by CORS"), false);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  // preflightContinue: false, // default (sends 204)
+  // optionsSuccessStatus: 204  // default in recent versions
+};
+
+// Apply CORS to all routes (handles simple requests)
+app.use(cors(corsOptions));
+
+// ✅ Express 5: use a regex for OPTIONS instead of "*"
+// (use /.*/ for everything, or scope to /^\/api\/.*/ if all APIs are under /api)
+app.options(/.*/, cors(corsOptions));
+// app.options(/^\/api\/.*/i, cors(corsOptions)); // scoped variant
 
 // ===== Body/utility middleware =====
 app.use(express.urlencoded({ extended: true }));
