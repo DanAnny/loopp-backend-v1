@@ -10,8 +10,9 @@ function setRefreshCookie(res, token) {
   res.cookie("refreshToken", token, {
     httpOnly: true,
     secure: config.env === "production", // true on Render (HTTPS). For local dev over http, set to false.
-    sameSite: "none",                    // required for Vercel ↔ Render cross-site
-    path: "/api/auth/refresh",
+    sameSite: "none", 
+    partitioned: true,                   // required for Vercel ↔ Render cross-site
+    path: "/auth/refresh",
     maxAge: 14 * 24 * 60 * 60 * 1000,    // 14 days
   });
 }
@@ -165,9 +166,10 @@ export const logout = async (req, res) => {
 
     // clear with same attributes
     res.clearCookie("refreshToken", {
-      path: "/api/auth/refresh",
+      path: "/auth/refresh",
       secure: config.env === "production",
       sameSite: "none",
+      partitioned: true,
       httpOnly: true,
     });
 
