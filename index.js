@@ -27,68 +27,92 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
-const io = new SocketIOServer(server, { cors: { origin: config.corsOrigin, credentials: true } });
-setIO(io);
 
-// middleware
+// ===== CORS allowlist (no trailing slashes!) =====
+const ALLOWLIST = [
+  "http://localhost:5173",
+  "https://loopp-frontend-v1.vercel.app",
+  "https://loopp-frontend-v1-zcup.vercel.app",
+];
+
+// Trust Render/Heroku-style proxy so secure cookies work
+app.set("trust proxy", 1);
+
+// ===== CORS =====
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://loopp-frontend-v1.vercel.app",
-      "https://loopp-frontend-v1-zcup.vercel.app",
-    ],
+    origin(origin, cb) {
+      // Allow same-origin/instrumented/no-Origin requests (curl, Postman)
+      if (!origin) return cb(null, true);
+      cb(null, ALLOWLIST.includes(origin));
+    },
     credentials: true,
-    methods: ["GET", "POST", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+// Ensure preflights succeed
+app.options("*", cors());
+
+// ===== Body/utility middleware =====
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: "10mb" }));
 app.use(cookieParser());
 app.use(morgan("dev"));
 
-// static
+// ===== Static files =====
 app.use("/uploads", express.static(path.resolve(__dirname, "uploads")));
 
-// session
+// ===== Session (SameSite=None; Secure for cross-site cookies) =====
 app.use(
   session({
     secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,
-    store: MongoStore.create({ mongoUrl: config.mongoURI, collectionName: "sessions" }),
+    store: MongoStore.create({
+      mongoUrl: config.mongoURI,
+      collectionName: "sessions",
+    }),
     cookie: {
       httpOnly: true,
-      secure: true,         // required with SameSite=None
-      sameSite: "none",     // required for cross-site cookies
+      secure: config.env === "production", // true on Render
+      sameSite: "none",                    // required for cross-site cookies
     },
   })
 );
 
-// passport
+// ===== Passport =====
 app.use(passport.initialize());
 app.use(passport.session());
 
-// db
+// ===== DB & GridFS =====
 await connectDB();
 initGridFS();
 
-// routes
+// ===== API routes =====
 app.use("/api", routes);
 
-// health
+// ===== Healthcheck =====
 app.get("/", (_req, res) => res.send("✅ API up"));
 
-// errors
+// ===== Errors =====
 app.use((_, __, next) => next(createError(404, "Not Found")));
-app.use((err, _req, res, __) => res.status(err.status || 500).json({ success: false, message: err.message }));
+app.use((err, _req, res, __) =>
+  res.status(err.status || 500).json({ success: false, message: err.message })
+);
 
-// presence: userId -> socket count
+// ===== Socket.IO (CORS mirrors HTTP allowlist) =====
+const io = new SocketIOServer(server, {
+  cors: { origin: ALLOWLIST, credentials: true },
+});
+setIO(io);
+
+// Presence: userId -> socket count
 const presence = new Map();
 
 io.on("connection", (socket) => {
-  // Accept userId via auth OR query for resilience
-  const rawId = socket.handshake?.auth?.userId || socket.handshake?.query?.userId || null;
+  const rawId =
+    socket.handshake?.auth?.userId || socket.handshake?.query?.userId || null;
   const userId = rawId ? String(rawId) : null;
   let myUserDoc = null;
 
@@ -97,10 +121,13 @@ io.on("connection", (socket) => {
       try {
         myUserDoc = await User.findById(userId).lean();
       } catch {}
-      socket.join(`user:${userId}`); // personal room for notifications
+      socket.join(`user:${userId}`);
       const count = (presence.get(userId) || 0) + 1;
       presence.set(userId, count);
-      User.updateOne({ _id: userId }, { $set: { online: true, lastActive: new Date() } }).catch(() => {});
+      User.updateOne(
+        { _id: userId },
+        { $set: { online: true, lastActive: new Date() } }
+      ).catch(() => {});
     }
   })();
 
@@ -108,13 +135,10 @@ io.on("connection", (socket) => {
     try {
       const room = await ChatRoom.findById(roomId).lean();
       if (!room) return socket.emit("error", "Room not found");
-      const isMember = room.members.some((m) => m.toString() === String(uid));
-      // if (!isMember || room.isClosed) return socket.emit("error", "Not allowed");
 
       socket.join(roomId);
       socket.emit("joined", roomId);
 
-      // ensure personal room is joined for this uid as well
       if (uid) socket.join(`user:${String(uid)}`);
 
       const u = myUserDoc || (await User.findById(uid).lean());
@@ -122,7 +146,10 @@ io.on("connection", (socket) => {
         type: "join",
         roomId,
         userId: uid,
-        name: [u?.firstName, u?.lastName].filter(Boolean).join(" ") || u?.email || "User",
+        name:
+          [u?.firstName, u?.lastName].filter(Boolean).join(" ") ||
+          u?.email ||
+          "User",
         role: u?.role || "User",
         timestamp: new Date().toISOString(),
       });
@@ -139,14 +166,16 @@ io.on("connection", (socket) => {
         type: "leave",
         roomId,
         userId,
-        name: [u?.firstName, u?.lastName].filter(Boolean).join(" ") || u?.email || "User",
+        name:
+          [u?.firstName, u?.lastName].filter(Boolean).join(" ") ||
+          u?.email ||
+          "User",
         role: u?.role || "User",
         timestamp: new Date().toISOString(),
       });
     } catch {}
   });
 
-  // typing indicator
   socket.on("typing", async ({ roomId, userId: uid, role, isTyping }) => {
     try {
       const room = await ChatRoom.findById(roomId);
@@ -158,45 +187,49 @@ io.on("connection", (socket) => {
     } catch (_) {}
   });
 
-  // optional socket message shortcut
-  socket.on("message", async ({ roomId, userId: uid, text = "", attachments = [] }) => {
-    try {
-      const room = await ChatRoom.findById(roomId).lean();
-      if (!room) return socket.emit("error", "Room not found");
-      const isMember = room.members.some((m) => m.toString() === String(uid));
-      // if (!isMember || room.isClosed) return socket.emit("error", "Not allowed");
+  socket.on(
+    "message",
+    async ({ roomId, userId: uid, text = "", attachments = [] }) => {
+      try {
+        const room = await ChatRoom.findById(roomId).lean();
+        if (!room) return socket.emit("error", "Room not found");
 
-      const u = myUserDoc || (await User.findById(uid).lean());
-      const msg = await Message.create({
-        room: roomId,
-        senderType: "User",
-        sender: uid,
-        text,
-        attachments,
-      });
+        const u = myUserDoc || (await User.findById(uid).lean());
+        const msg = await Message.create({
+          room: roomId,
+          senderType: "User",
+          sender: uid,
+          text,
+          attachments,
+        });
 
-      io.to(roomId).emit("message", {
-        _id: msg._id,
-        room: roomId,
-        sender: uid,
-        senderType: "User",
-        senderRole: u?.role || "User",
-        senderName: [u?.firstName, u?.lastName].filter(Boolean).join(" ") || "User",
-        text,
-        attachments,
-        createdAt: msg.createdAt,
-      });
-    } catch (e) {
-      socket.emit("error", e.message);
+        io.to(roomId).emit("message", {
+          _id: msg._id,
+          room: roomId,
+          sender: uid,
+          senderType: "User",
+          senderRole: u?.role || "User",
+          senderName:
+            [u?.firstName, u?.lastName].filter(Boolean).join(" ") || "User",
+          text,
+          attachments,
+          createdAt: msg.createdAt,
+        });
+      } catch (e) {
+        socket.emit("error", e.message);
+      }
     }
-  });
+  );
 
   socket.on("disconnect", async () => {
     if (userId) {
       const remaining = (presence.get(userId) || 1) - 1;
       if (remaining <= 0) {
         presence.delete(userId);
-        await User.updateOne({ _id: userId }, { $set: { online: false, lastActive: new Date() } }).catch(() => {});
+        await User.updateOne(
+          { _id: userId },
+          { $set: { online: false, lastActive: new Date() } }
+        ).catch(() => {});
       } else {
         presence.set(userId, remaining);
       }
