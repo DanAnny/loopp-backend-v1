@@ -33,7 +33,10 @@ setIO(io);
 // middleware
 app.use(
   cors({
-    origin: "*",
+    origin: [
+      "http://localhost:5173",
+      "https://loopp-frontend-v1-zcup.vercel.app/",
+    ],
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
   })
