@@ -33,11 +33,7 @@ setIO(io);
 // middleware
 app.use(
   cors({
-    origin: [
-      "https://angelmap.foundryradar.com",
-      "https://embryologic-lunulate-gilberto.ngrok-free.dev",
-      "http://localhost:5173",
-    ],
+    origin: "*",
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
   })
