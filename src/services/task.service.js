@@ -227,29 +227,40 @@ export const engineerCompleteTask = async (taskId, engineerUser, auditMeta = {})
     meta: auditMeta,
   });
 
-  // (Your existing review pushes/messages)
+  // 🔔 Notify the chat room and PERSIST the inline system notice
   if (movedToReview && req.chatRoom) {
     const roomId = req.chatRoom.toString();
     try {
+      // Optional event that you already had
       getIO()?.to(roomId).emit("project:review", {
         requestId: req._id.toString(),
         status: "Review",
       });
+
+      // PERSISTED System notice with your requested copy
+      const text =
+        "---- Project has been submitted; type /rate and click send to rate the PM, Engineer, and their teamwork ----";
+      const msg = await Message.create({
+        room: roomId,
+        senderType: "System",
+        sender: null,
+        text,
+        attachments: [],
+      });
       getIO()?.to(roomId).emit("message", {
-        _id: `${Date.now()}-${Math.random()}`,
+        _id: msg._id,
         room: roomId,
         senderType: "System",
         senderRole: "PM",
         senderName: "System",
-        text:
-          "✅ Your project is ready for review. Please rate the PM, Engineer, and Teamwork so we can wrap up!",
+        text,
         attachments: [],
-        createdAt: new Date().toISOString(),
+        createdAt: msg.createdAt,
       });
-    } catch {}
+    } catch (_) {}
   }
 
-  // (existing admin notifications)
+  // Persistent notifications (unchanged)
   try {
     if (req.pmAssigned) {
       await createAndEmit(req.pmAssigned, {
