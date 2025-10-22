@@ -82,29 +82,94 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
       request: request._id,
       roomKey: crypto.randomBytes(10).toString("base64url"),
       isClosed: false,
-      // new fields default false/null but we set explicitly for clarity
+      // explicit defaults
       reopenRequestedByClient: false,
       reopenRequestedAt: null,
       reopenRequestedBy: null,
+      // also persist who the PM is on the room for easy lookups (optional if you already do elsewhere)
+      pm: pm._id,
     });
 
     request.pmAssigned = pm._id;
     request.chatRoom = room._id;
     await request.save();
 
-    // Default greeting from the PM (visible to client when they join)
+    // --- ORDER GUARANTEE: emit PM-ASSIGNED notice BEFORE default greeting ---
     try {
       const pmUser = await User.findById(pm._id).lean();
-      await Message.create({
-        room: room._id,
-        senderType: "User",
-        sender: pm._id,
-        text:
-          `Hi ${firstName}, I'm ${[pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "your PM"}.\n\n` +
-          `I'll be your Project Manager for “${projectTitle}”. Drop what you want us to build and any files you have — ` +
-          `let’s turn your idea into reality! 🚀`,
-      });
-    } catch (_) {}
+      const pmName =
+        [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
+
+      // 1) Inline room notice (realtime). Frontend should render this above any greeting.
+      getIO()
+        ?.to(room._id.toString())
+        .emit("system", {
+          type: "pm_assigned",
+          roomId: room._id.toString(),
+          pmId: pm._id.toString(),
+          pmName,
+          text: `${pmName} HAS BEEN ASSIGNED AS YOUR PM`,
+          timestamp: new Date().toISOString(),
+        });
+
+      // 2) (Optional but useful) persist a system marker so history also shows it
+      //    If your Message schema doesn't support senderType "System"/kind, this will simply be stored as a normal message.
+      try {
+        const sysMsg = await Message.create({
+          room: room._id,
+          senderType: "System",
+          sender: null,
+          text: `${pmName} HAS BEEN ASSIGNED AS YOUR PM`,
+          attachments: [],
+          kind: "pm_assigned_notice",
+        });
+
+        // Emit persisted system message for clients that rely on "message" stream
+        getIO()
+          ?.to(room._id.toString())
+          .emit("message", {
+            _id: sysMsg._id,
+            room: room._id.toString(),
+            sender: null,
+            senderType: "System",
+            senderRole: "System",
+            senderName: "System",
+            text: sysMsg.text,
+            attachments: [],
+            createdAt: sysMsg.createdAt,
+          });
+      } catch {
+        // If your schema doesn't allow this, the realtime system event above still covers the UX.
+      }
+
+      // 3) Default greeting from the PM (created/sent AFTER the assigned notice)
+      try {
+        const greet = await Message.create({
+          room: room._id,
+          senderType: "User",
+          sender: pm._id,
+          text:
+            `Hi ${firstName}, I'm ${pmName}.\n\n` +
+            `I'll be your Project Manager for “${projectTitle}”. Drop what you want us to build and any files you have — ` +
+            `let’s turn your idea into reality! 🚀`,
+          kind: "pm_welcome", // helps keep it idempotent if you ever need checks later
+        });
+
+        getIO()
+          ?.to(room._id.toString())
+          .emit("message", {
+            _id: greet._id,
+            room: room._id.toString(),
+            sender: pm._id.toString(),
+            senderType: "User",
+            senderRole: "PM",
+            senderName: pmName,
+            text: greet.text,
+            attachments: [],
+            createdAt: greet.createdAt,
+          });
+      } catch {}
+    } catch {}
 
     // existing personal ping for PM inbox badge
     try {
@@ -512,4 +577,4 @@ export const reopenRoomAndResume = async (requestId, pmUser, auditMeta = {}) => 
   } catch {}
 
   return req;
-}
+};
