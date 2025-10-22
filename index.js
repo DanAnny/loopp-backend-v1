@@ -43,25 +43,17 @@ const corsOptions = {
     // Allow same-origin tools (curl/Postman) that send no Origin
     if (!origin) return cb(null, true);
     return cb(null, ALLOWLIST.includes(origin));
-    // If you prefer explicit rejection, use:
-    // return ALLOWLIST.includes(origin)
-    //   ? cb(null, true)
-    //   : cb(new Error("Not allowed by CORS"), false);
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
-  // preflightContinue: false, // default (sends 204)
-  // optionsSuccessStatus: 204  // default in recent versions
 };
 
 // Apply CORS to all routes (handles simple requests)
 app.use(cors(corsOptions));
 
 // ✅ Express 5: use a regex for OPTIONS instead of "*"
-// (use /.*/ for everything, or scope to /^\/api\/.*/ if all APIs are under /api)
 app.options(/.*/, cors(corsOptions));
-// app.options(/^\/api\/.*/i, cors(corsOptions)); // scoped variant
 
 // ===== Body/utility middleware =====
 app.use(express.urlencoded({ extended: true }));
@@ -119,6 +111,10 @@ setIO(io);
 // Presence: userId -> socket count
 const presence = new Map();
 
+// Guards to reduce duplicate inline notices
+const pmAnnounced = new Set();            // Set<roomId>
+const engineerFirstJoin = new Set();      // Set<`${roomId}:${userId}`>
+
 io.on("connection", (socket) => {
   const rawId =
     socket.handshake?.auth?.userId || socket.handshake?.query?.userId || null;
@@ -151,6 +147,9 @@ io.on("connection", (socket) => {
       if (uid) socket.join(`user:${String(uid)}`);
 
       const u = myUserDoc || (await User.findById(uid).lean());
+      const role = (u?.role || "User").toString();
+
+      // Generic system "join" (kept as-is)
       io.to(roomId).emit("system", {
         type: "join",
         roomId,
@@ -159,9 +158,83 @@ io.on("connection", (socket) => {
           [u?.firstName, u?.lastName].filter(Boolean).join(" ") ||
           u?.email ||
           "User",
-        role: u?.role || "User",
+        role,
         timestamp: new Date().toISOString(),
       });
+
+      // ---- NEW inline presence/status notices ----
+      if (/pm|project\s*manager/i.test(role)) {
+        // 1) "PM is actively online"
+        io.to(roomId).emit("system", {
+          type: "pm_online",
+          roomId,
+          role: "PM",
+          timestamp: new Date().toISOString(),
+        });
+
+        // 2) (Optional) "A PM has been assigned" BEFORE any default greeting (only once)
+        if (!pmAnnounced.has(String(roomId))) {
+          pmAnnounced.add(String(roomId));
+          io.to(roomId).emit("system", {
+            type: "pm_assigned",
+            roomId,
+            role: "PM",
+            timestamp: new Date().toISOString(),
+          });
+
+          // If you also want to ensure a default PM greeting exists from server-side:
+          // Only add if no PM message has been posted before (lightweight check)
+          const hasAnyPMMessage = await Message.exists({ room: roomId, senderType: "User" });
+          if (!hasAnyPMMessage) {
+            const pmName =
+              [u?.firstName, u?.lastName].filter(Boolean).join(" ") || "PM";
+            const text =
+              `Hi! I’m ${pmName}. I’ll coordinate this project and keep you updated here. ` +
+              `Please share requirements, files, or questions anytime — we’ll get rolling.`;
+
+            const msg = await Message.create({
+              room: roomId,
+              senderType: "User",
+              sender: uid,
+              text,
+              attachments: [],
+            });
+
+            io.to(roomId).emit("message", {
+              _id: msg._id,
+              room: roomId,
+              sender: uid,
+              senderType: "User",
+              senderRole: "PM",
+              senderName: pmName,
+              text,
+              attachments: [],
+              createdAt: msg.createdAt,
+            });
+          }
+        }
+      }
+
+      if (/engineer/i.test(role)) {
+        // a) First time this engineer joins the room -> "ENGINEER IS IN THE ROOM"
+        const tag = `${roomId}:${String(uid)}`;
+        if (!engineerFirstJoin.has(tag)) {
+          engineerFirstJoin.add(tag);
+          io.to(roomId).emit("system", {
+            type: "engineer_joined",
+            roomId,
+            role: "Engineer",
+            timestamp: new Date().toISOString(),
+          });
+        }
+        // b) Presence heartbeat -> "ENGINEER IS IN THE ROOM" (show inline as needed)
+        io.to(roomId).emit("system", {
+          type: "engineer_online",
+          roomId,
+          role: "Engineer",
+          timestamp: new Date().toISOString(),
+        });
+      }
     } catch (e) {
       socket.emit("error", e.message);
     }

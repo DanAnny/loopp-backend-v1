@@ -1,3 +1,4 @@
+// backend/src/services/task.service.js
 import { Task } from "../models/Task.js";
 import { ProjectRequest } from "../models/ProjectRequest.js";
 import { ChatRoom } from "../models/ChatRoom.js";
@@ -8,6 +9,9 @@ import mongoose from "mongoose";
 
 /* 🔔 notifications */
 import { createAndEmit, notifySuperAdmins, links } from "./notify.service.js";
+
+// NEW: system inline emitter
+import { emitSystem } from "../lib/events.js";
 
 /** Parse 'YYYY-MM-DD' into a UTC Date (00:00:00). Returns null if invalid. */
 function parseYmdToUtcDate(ymd) {
@@ -54,6 +58,20 @@ export const createTaskForRequest = async (
     deadline: chosenDeadline || null,
   });
 
+  // 🔵 INLINE NOTICE: PM HAS ASSIGNED THE PROJECT TO AN ENGINEER (First Last)
+  try {
+    if (req.chatRoom) {
+      const eng = await User.findById(engineerId).lean();
+      emitSystem(req.chatRoom, {
+        type: "pm_assigned_engineer",
+        role: "PM",
+        engineer: eng
+          ? { id: String(eng._id), firstName: eng.firstName || "", lastName: eng.lastName || "" }
+          : { id: String(engineerId), firstName: "", lastName: "" },
+      });
+    }
+  } catch {}
+
   // ❌ Do NOT bump engineer workload on assignment.
   // Workload increments only when the engineer ACCEPTS the task.
 
@@ -64,17 +82,17 @@ export const createTaskForRequest = async (
       title: "You’ve been assigned a project",
       body: `“${req.projectTitle || "Project"}” by ${req.firstName} ${req.lastName}`,
       link: links.engineerTask(req._id),
-      meta: { requestId: req._id, taskId: task._id }, // helps the unique index
+      meta: { requestId: req._id, taskId: task._id },
     });
   } catch {}
 
-  // ✅ heads-up for SuperAdmins (no routing for SA)
+  // ✅ heads-up for SuperAdmins
   try {
     await notifySuperAdmins({
       type: "ENGINEER_ASSIGNED",
       title: "Engineer assigned",
       body: `PM assigned an engineer for “${req.projectTitle || "Project"}”.`,
-      link: "", // superadmin should NOT navigate
+      link: "",
       meta: { requestId: req._id, taskId: task._id, engineerId },
     });
   } catch {}
@@ -117,7 +135,6 @@ export const engineerAcceptTask = async (taskId, engineerUser, auditMeta = {}) =
     }
   }
 
-  // ✅ Increment workload ONLY the first time this task moves into InProgress
   const alreadyInProgress =
     String(task.status || "").toLowerCase() === "inprogress";
   if (!alreadyInProgress) {
@@ -125,7 +142,6 @@ export const engineerAcceptTask = async (taskId, engineerUser, auditMeta = {}) =
       { _id: engineerUser._id },
       { $inc: { numberOfTask: 1 }, $set: { isBusy: true } }
     );
-    // Flag the request so reopen knows to re-add workload later
     if (!req.__engineerAccepted) {
       req.__engineerAccepted = true;
     }
@@ -149,14 +165,25 @@ export const engineerAcceptTask = async (taskId, engineerUser, auditMeta = {}) =
     meta: auditMeta,
   });
 
-  // 🔔 Notify PM & SuperAdmins
+  // 🔵 INLINE NOTICE: ENGINEER HAS ACCEPTED...
+  try {
+    if (req.chatRoom) {
+      emitSystem(req.chatRoom, {
+        type: "engineer_accepted",
+        role: "Engineer",
+        engineer: { id: String(engineerUser._id), firstName: engineerUser.firstName || "", lastName: engineerUser.lastName || "" },
+      });
+    }
+  } catch {}
+
+  // 🔔 Notify PM & SuperAdmins (existing)
   try {
     if (req.pmAssigned) {
       await createAndEmit(req.pmAssigned, {
         type: "ENGINEER_ACCEPTED",
         title: "Engineer accepted the task",
         body: `Engineer accepted “${req.projectTitle || "Project"}”.`,
-        link: links.chat(), // PM to /chat
+        link: links.chat(),
         meta: { requestId: req._id, taskId: task._id, roomId },
       });
     }
@@ -164,7 +191,7 @@ export const engineerAcceptTask = async (taskId, engineerUser, auditMeta = {}) =
       type: "ENGINEER_ACCEPTED",
       title: "Engineer accepted",
       body: `Engineer accepted “${req.projectTitle || "Project"}”.`,
-      link: "", // SA doesn't navigate
+      link: "",
       meta: { requestId: req._id, taskId: task._id, engineerId: engineerUser._id },
     });
   } catch {}
@@ -200,7 +227,7 @@ export const engineerCompleteTask = async (taskId, engineerUser, auditMeta = {})
     meta: auditMeta,
   });
 
-  // 🔔 Notify the chat room so client sees rating UI immediately
+  // (Your existing review pushes/messages)
   if (movedToReview && req.chatRoom) {
     const roomId = req.chatRoom.toString();
     try {
@@ -219,17 +246,17 @@ export const engineerCompleteTask = async (taskId, engineerUser, auditMeta = {})
         attachments: [],
         createdAt: new Date().toISOString(),
       });
-    } catch (_) {}
+    } catch {}
   }
 
-  // 🔔 Persistent notifications
+  // (existing admin notifications)
   try {
     if (req.pmAssigned) {
       await createAndEmit(req.pmAssigned, {
         type: "STATUS_REVIEW",
         title: "Project moved to Review",
         body: `“${req.projectTitle || "Project"}” is ready for review.`,
-        link: links.chat(), // PM goes to /chat (list)
+        link: links.chat(),
         meta: { requestId: req._id, taskId: task._id, roomId: req.chatRoom },
       });
     }
@@ -237,7 +264,7 @@ export const engineerCompleteTask = async (taskId, engineerUser, auditMeta = {})
       type: "STATUS_REVIEW",
       title: "Project in Review",
       body: `“${req.projectTitle || "Project"}” moved to Review.`,
-      link: "", // SA: no nav
+      link: "",
       meta: { requestId: req._id, taskId: task._id },
     });
   } catch {}
