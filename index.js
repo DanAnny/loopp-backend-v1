@@ -20,6 +20,7 @@ import routes from "./src/routes/index.js";
 import { ChatRoom } from "./src/models/ChatRoom.js";
 import { Message } from "./src/models/Message.js";
 import { User } from "./src/models/User.js";
+import { ProjectRequest } from "./src/models/ProjectRequest.js";
 import { initGridFS } from "./src/lib/gridfs.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -40,7 +41,6 @@ app.set("trust proxy", 1);
 
 const corsOptions = {
   origin(origin, cb) {
-    // Allow same-origin tools (curl/Postman) that send no Origin
     if (!origin) return cb(null, true);
     return cb(null, ALLOWLIST.includes(origin));
   },
@@ -48,23 +48,16 @@ const corsOptions = {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 };
-
-// Apply CORS to all routes (handles simple requests)
 app.use(cors(corsOptions));
-
-// ✅ Express 5: use a regex for OPTIONS instead of "*"
 app.options(/.*/, cors(corsOptions));
 
-// ===== Body/utility middleware =====
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: "10mb" }));
 app.use(cookieParser());
 app.use(morgan("dev"));
 
-// ===== Static files =====
 app.use("/uploads", express.static(path.resolve(__dirname, "uploads")));
 
-// ===== Session (SameSite=None; Secure for cross-site cookies) =====
 app.use(
   session({
     secret: config.sessionSecret,
@@ -76,33 +69,26 @@ app.use(
     }),
     cookie: {
       httpOnly: true,
-      secure: config.env === "production", // true on Render
-      sameSite: "none",                    // required for cross-site cookies
+      secure: config.env === "production",
+      sameSite: "none",
     },
   })
 );
-
-// ===== Passport =====
 app.use(passport.initialize());
 app.use(passport.session());
 
-// ===== DB & GridFS =====
 await connectDB();
 initGridFS();
 
-// ===== API routes =====
 app.use("/api", routes);
-
-// ===== Healthcheck =====
 app.get("/", (_req, res) => res.send("✅ API up"));
 
-// ===== Errors =====
 app.use((_, __, next) => next(createError(404, "Not Found")));
 app.use((err, _req, res, __) =>
   res.status(err.status || 500).json({ success: false, message: err.message })
 );
 
-// ===== Socket.IO (CORS mirrors HTTP allowlist) =====
+// ===== Socket.IO =====
 const io = new SocketIOServer(server, {
   cors: { origin: ALLOWLIST, credentials: true },
 });
@@ -111,9 +97,73 @@ setIO(io);
 // Presence: userId -> socket count
 const presence = new Map();
 
-// Guards to reduce duplicate inline notices
+// Guards to reduce duplicates
 const pmAnnounced = new Set();            // Set<roomId>
 const engineerFirstJoin = new Set();      // Set<`${roomId}:${userId}`>
+
+/** Persist (if missing) and broadcast a System inline message */
+async function ensureSystemInline(roomId, text, emitAlso = true) {
+  const existing = await Message.exists({
+    room: roomId,
+    senderType: "System",
+    text,
+  });
+  if (!existing) {
+    const msg = await Message.create({
+      room: roomId,
+      senderType: "System",
+      sender: null,
+      text,
+      attachments: [],
+    });
+    if (emitAlso) {
+      io.to(String(roomId)).emit("message", {
+        _id: msg._id,
+        room: roomId,
+        senderType: "System",
+        senderRole: "PM",
+        senderName: "System",
+        text,
+        attachments: [],
+        createdAt: msg.createdAt,
+      });
+    }
+  } else if (emitAlso) {
+    // re-emit inline (not necessary, but keeps parity if a client joined late)
+    io.to(String(roomId)).emit("system", {
+      type: "inline",
+      roomId,
+      timestamp: new Date().toISOString(),
+      text,
+    });
+  }
+}
+
+/** Persist and broadcast a normal user message for greeting */
+async function createAndEmitMessage(roomId, userDoc, text) {
+  const msg = await Message.create({
+    room: roomId,
+    senderType: "User",
+    sender: userDoc._id,
+    text,
+    attachments: [],
+  });
+
+  io.to(roomId).emit("message", {
+    _id: msg._id,
+    room: roomId,
+    sender: userDoc._id,
+    senderType: "User",
+    senderRole: userDoc?.role || "User",
+    senderName:
+      [userDoc?.firstName, userDoc?.lastName].filter(Boolean).join(" ") ||
+      userDoc?.email?.split?.("@")?.[0] ||
+      "User",
+    text,
+    attachments: [],
+    createdAt: msg.createdAt,
+  });
+}
 
 io.on("connection", (socket) => {
   const rawId =
@@ -123,9 +173,7 @@ io.on("connection", (socket) => {
 
   (async () => {
     if (userId) {
-      try {
-        myUserDoc = await User.findById(userId).lean();
-      } catch {}
+      try { myUserDoc = await User.findById(userId).lean(); } catch {}
       socket.join(`user:${userId}`);
       const count = (presence.get(userId) || 0) + 1;
       presence.set(userId, count);
@@ -143,13 +191,12 @@ io.on("connection", (socket) => {
 
       socket.join(roomId);
       socket.emit("joined", roomId);
-
       if (uid) socket.join(`user:${String(uid)}`);
 
       const u = myUserDoc || (await User.findById(uid).lean());
       const role = (u?.role || "User").toString();
 
-      // Generic system "join" (kept as-is)
+      // Generic join system event
       io.to(roomId).emit("system", {
         type: "join",
         roomId,
@@ -162,28 +209,30 @@ io.on("connection", (socket) => {
         timestamp: new Date().toISOString(),
       });
 
-      // ---- NEW inline presence/status notices ----
-      if (/pm|project\s*manager/i.test(role)) {
-        // 1) "PM is actively online"
-        io.to(roomId).emit("system", {
-          type: "pm_online",
-          roomId,
-          role: "PM",
-          timestamp: new Date().toISOString(),
-        });
+      // ------ NEW: When CLIENT joins, show PM-assigned *before* any greeting ------
+      if (/client/i.test(role)) {
+        // Find the ProjectRequest by room to see if a PM is already assigned
+        const pr = await ProjectRequest.findOne({ chatRoom: roomId }, "pmAssigned").lean();
+        if (pr?.pmAssigned) {
+          await ensureSystemInline(
+            roomId,
+            "----- A PM HAS BEEN ASSIGNED -----",
+            true
+          );
+        }
+      }
 
-        // 2) (Optional) "A PM has been assigned" BEFORE any default greeting (only once)
+      // ------ PM presence & greeting (greeting comes AFTER the inline above) ------
+      if (/pm|project\s*manager/i.test(role)) {
+        // Presence inline
+        await ensureSystemInline(roomId, "----- PM IS ACTIVELY ONLINE -----", true);
+
+        // Post one-time PM-assigned inline (in case it didn't exist yet)
         if (!pmAnnounced.has(String(roomId))) {
           pmAnnounced.add(String(roomId));
-          io.to(roomId).emit("system", {
-            type: "pm_assigned",
-            roomId,
-            role: "PM",
-            timestamp: new Date().toISOString(),
-          });
+          await ensureSystemInline(roomId, "----- A PM HAS BEEN ASSIGNED -----", true);
 
-          // If you also want to ensure a default PM greeting exists from server-side:
-          // Only add if no PM message has been posted before (lightweight check)
+          // Default PM greeting (persisted)
           const hasAnyPMMessage = await Message.exists({ room: roomId, senderType: "User" });
           if (!hasAnyPMMessage) {
             const pmName =
@@ -191,49 +240,20 @@ io.on("connection", (socket) => {
             const text =
               `Hi! I’m ${pmName}. I’ll coordinate this project and keep you updated here. ` +
               `Please share requirements, files, or questions anytime — we’ll get rolling.`;
-
-            const msg = await Message.create({
-              room: roomId,
-              senderType: "User",
-              sender: uid,
-              text,
-              attachments: [],
-            });
-
-            io.to(roomId).emit("message", {
-              _id: msg._id,
-              room: roomId,
-              sender: uid,
-              senderType: "User",
-              senderRole: "PM",
-              senderName: pmName,
-              text,
-              attachments: [],
-              createdAt: msg.createdAt,
-            });
+            await createAndEmitMessage(roomId, u || { _id: uid, role: "PM" }, text);
           }
         }
       }
 
+      // ------ Engineer presence ------
       if (/engineer/i.test(role)) {
-        // a) First time this engineer joins the room -> "ENGINEER IS IN THE ROOM"
         const tag = `${roomId}:${String(uid)}`;
         if (!engineerFirstJoin.has(tag)) {
           engineerFirstJoin.add(tag);
-          io.to(roomId).emit("system", {
-            type: "engineer_joined",
-            roomId,
-            role: "Engineer",
-            timestamp: new Date().toISOString(),
-          });
+          await ensureSystemInline(roomId, "----- ENGINEER IS IN THE ROOM -----", true);
+        } else {
+          await ensureSystemInline(roomId, "----- ENGINEER IS IN THE ROOM -----", true);
         }
-        // b) Presence heartbeat -> "ENGINEER IS IN THE ROOM" (show inline as needed)
-        io.to(roomId).emit("system", {
-          type: "engineer_online",
-          roomId,
-          role: "Engineer",
-          timestamp: new Date().toISOString(),
-        });
       }
     } catch (e) {
       socket.emit("error", e.message);
