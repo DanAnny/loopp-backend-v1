@@ -1,3 +1,4 @@
+// backend/src/config.js
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -11,6 +12,15 @@ export const config = {
   port: process.env.PORT || 5500,
   mongoURI: process.env.MONGODB_URI,
   corsOrigin: process.env.CORS_ORIGIN,
+  smtp: {
+    // ⬇️ keep mail disabled by default
+    enabled: String(process.env.SMTP_ENABLED || "").toLowerCase() === "true",
+    host: process.env.SMTP_HOST,
+    port: process.env.SMTP_PORT,
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+    mailFrom: process.env.MAIL_FROM,
+  },
   sessionSecret: process.env.SESSION_SECRET || "fallback-secret",
   jwt: {
     accessSecret: process.env.JWT_ACCESS_SECRET,

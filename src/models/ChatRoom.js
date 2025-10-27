@@ -1,33 +1,45 @@
-// src/models/ChatRoom.js
 import mongoose from "mongoose";
 
 const ChatRoomSchema = new mongoose.Schema(
   {
-    title: String,
+    title:   { type: String, default: "" },
+
     members: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+
+    // link to the request (fast access for meta)
     request: { type: mongoose.Schema.Types.ObjectId, ref: "ProjectRequest" },
+
+    // the assigned PM (your code relies on this existing)
+    pm:      { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+
     isClosed: { type: Boolean, default: false },
 
-    // Live typing (you already write to it from sockets)
-    typing: { type: Map, of: String, default: {} }, // userId -> role
+    // Live typing map: userId -> role
+    typing: { type: Map, of: String, default: {} },
 
-    // 🔑 Deep-linking key
-    roomKey: { type: String, default: null }, // optional
+    // Deep-link key (optional)
+    roomKey: { type: String, default: null },
 
-    // (optional) quick summary for conversation list
+    // quick summary for conversation list
     lastMessage: {
-      text: { type: String, default: "" },
-      at: { type: Date, default: null },
+      text:   { type: String, default: "" },
+      at:     { type: Date, default: null },
       sender: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     },
 
-    // ✅ NEW: reopen request from client
+    // reopen flow
     reopenRequestedByClient: { type: Boolean, default: false },
+    reopenRequestedAt:       { type: Date, default: null },
+    reopenRequestedBy:       { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
   { timestamps: true }
 );
 
-// ✅ allow many nulls; only enforce uniqueness when present
+/* ------------ Indexes ------------ */
 ChatRoomSchema.index({ roomKey: 1 }, { unique: true, sparse: true, name: "roomKey_1" });
+ChatRoomSchema.index({ request: 1 });
+ChatRoomSchema.index({ members: 1 });
+ChatRoomSchema.index({ pm: 1 });
+ChatRoomSchema.index({ updatedAt: -1 }); // list ordering
 
 export const ChatRoom = mongoose.model("ChatRoom", ChatRoomSchema);

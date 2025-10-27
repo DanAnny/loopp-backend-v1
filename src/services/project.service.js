@@ -2,14 +2,21 @@ import { ProjectRequest } from "../models/ProjectRequest.js";
 import { ChatRoom } from "../models/ChatRoom.js";
 import { User } from "../models/User.js";
 import { Message } from "../models/Message.js";
-import { selectAndClaimPM } from "./pm-selection.service.js";
+import {
+  selectAndClaimOnlinePM,
+  tryClaimSpecificPM,
+  ONLINE_WINDOW_MS,
+} from "./pm-selection.service.js";
 import { generateClientKey } from "../utils/token.utils.js";
 import { logAudit } from "./audit.service.js";
 import crypto from "crypto";
 import { getIO } from "../lib/io.js";
 
-/* 🔔 notifications */
+/* 🔔 notifications (socket + in-app; email disabled for now) */
 import { createAndEmit, notifySuperAdmins, links } from "./notify.service.js";
+
+/* NEW: scoped emit + persist for client-only system bubbles */
+import { roomKey, saveAndEmitSystemForClients } from "../lib/io.js";
 
 /* ----------------------- helpers: workload & busy state ----------------------- */
 
@@ -39,7 +46,129 @@ async function adjustTaskCount(userId, delta, { touchAssignDate = false } = {}) 
   return doc;
 }
 
-/* ------------------------- main service functions ---------------------------- */
+/** CAS: claim this request for pmId only if pmAssigned is still empty. */
+async function safeSetPmAssigned(requestId, pmId) {
+  const res = await ProjectRequest.updateOne(
+    { _id: requestId, $or: [{ pmAssigned: null }, { pmAssigned: { $exists: false } }] },
+    { $set: { pmAssigned: pmId, status: "InProgress" } }
+  );
+  return res.modifiedCount > 0;
+}
+
+/** Rollback PM claim if failed to set pmAssigned (prevents double-assign). */
+async function rollbackPmClaim(pmId) {
+  if (!pmId) return;
+  await adjustTaskCount(pmId, -1);
+}
+
+/* ------------------------- finalize assignment (messages etc.) ------------------------- */
+async function finalizePmAssignment({ request, room, pm }) {
+  // ensure membership includes PM
+  await ChatRoom.updateOne({ _id: room._id }, { $addToSet: { members: pm._id } });
+
+  // also persist PM onto the room so sockets/UI can detect "already assigned"
+  await ChatRoom.updateOne({ _id: room._id }, { $set: { pm: pm._id } });
+
+  // 🔴 permanent SYSTEM bubble (client-only) — persisted + emitted in real time
+  try {
+    const pmUser = await User.findById(pm._id).lean();
+    const pmName =
+      [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
+
+    await saveAndEmitSystemForClients({
+      roomId: room._id.toString(),
+      kind: "pm_assigned",
+      text: `${pmName} has been assigned as your PM. They’ll join shortly.`,
+    });
+
+    // ✅ Immediately create (idempotent) PM welcome and emit to the room
+    const welcomeText =
+      `Hi! I’m ${pmName}. I’ll coordinate this project and keep you updated here. ` +
+      `Please share requirements, files, or questions anytime — we’ll get rolling.`;
+
+    const upsert = await Message.findOneAndUpdate(
+      { room: room._id, kind: "pm_welcome" },
+      {
+        $setOnInsert: {
+          room: room._id,
+          senderType: "User",
+          sender: pm._id,
+          text: welcomeText,
+          attachments: [],
+          kind: "pm_welcome",
+        },
+      },
+      { upsert: true, new: true, rawResult: true }
+    );
+
+    const wasInserted = !!upsert?.lastErrorObject?.upserted;
+    const msgDoc = upsert?.value;
+
+    if (wasInserted && msgDoc) {
+      getIO()
+        ?.to(roomKey.all(room._id.toString()))
+        .emit("message", {
+          _id: msgDoc._id,
+          room: room._id.toString(),
+          sender: pm._id.toString(),
+          senderType: "User",
+          senderRole: "PM",
+          senderName: pmName,
+          text: welcomeText,
+          attachments: [],
+          createdAt: msgDoc.createdAt,
+        });
+    }
+
+    // explicit event so client header can update instantly (even before PM sends a message)
+    getIO()?.to(room._id.toString()).emit("room:pm_assigned", {
+      roomId: room._id.toString(),
+      requestId: String(request._id),
+      pm: {
+        id: String(pm._id),
+        firstName: pmUser?.firstName || "",
+        lastName: pmUser?.lastName || "",
+        email: pmUser?.email || "",
+      },
+      at: new Date().toISOString(),
+    });
+  } catch {}
+
+  // (C) notify PM (badge + in-app)
+  try {
+    getIO()?.to(`user:${pm._id.toString()}`).emit("pm:request_assigned", {
+      requestId: request._id.toString(),
+      clientName: `${request.firstName} ${request.lastName}`.trim(),
+      projectTitle: request.projectTitle,
+      roomId: room?._id?.toString() || null,
+    });
+
+    await logAudit({
+      action: "PM_ASSIGNED",
+      actor: null,
+      target: request._id,
+      targetModel: "ProjectRequest",
+      request: request._id,
+      room: room._id,
+      meta: { pmAssigned: pm._id },
+    });
+
+    await createAndEmit(pm._id, {
+      type: "PM_ASSIGNED",
+      title: "New project assigned",
+      body: `“${request.projectTitle || "Project"}” from ${request.firstName} ${request.lastName}`,
+      link: links.chatRoom(room._id),
+      meta: {
+        requestId: request._id,
+        roomId: room._id,
+        projectTitle: request.projectTitle,
+        clientName: `${request.firstName} ${request.lastName}`,
+      },
+    });
+  } catch {}
+}
+
+/* ------------------------- main: create request + assign ---------------------------- */
 
 export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) => {
   const {
@@ -50,7 +179,7 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
     projectDescription,
     completionDate,
     clientKey: clientKeyOverride,
-    clientId, // ✅ may be null for WP intake
+    clientId, // may be null (e.g., WP intake)
   } = payload;
 
   const request = await ProjectRequest.create({
@@ -65,85 +194,51 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
     clientId: clientId || null,
   });
 
-  // CLAIM a PM atomically (increments numberOfTask exactly once)
-  const pm = await selectAndClaimPM();
-  let room = null;
+  const roomTitle = `${projectTitle} - ${firstName} - ${request._id.toString().slice(-5)}`;
+
+  // include client in members when we have clientId
+  const members = [];
+  if (clientId) members.push(clientId);
+
+  const room = await ChatRoom.create({
+    title: roomTitle,
+    members,
+    request: request._id,
+    roomKey: crypto.randomBytes(10).toString("base64url"),
+    isClosed: false,
+    reopenRequestedByClient: false,
+  });
+
+  request.chatRoom = room._id;
+  await request.save();
+
+  // Try strict ONLINE assignment now (no offline fallback)
+  let pm = await selectAndClaimOnlinePM();
 
   if (pm) {
-    const roomTitle = `${projectTitle} - ${firstName} - ${request._id.toString().slice(-5)}`;
+    const ok = await safeSetPmAssigned(request._id, pm._id);
+    if (ok) {
+      const reqDoc = await ProjectRequest.findById(request._id);
+      await finalizePmAssignment({ request: reqDoc, room, pm });
+    } else {
+      await rollbackPmClaim(pm._id);
+      pm = null;
+    }
+  }
 
-    // ✅ include client in members when we have clientId
-    const members = [pm._id];
-    if (clientId) members.push(clientId);
-
-    room = await ChatRoom.create({
-      title: roomTitle,
-      members,
-      request: request._id,
-      roomKey: crypto.randomBytes(10).toString("base64url"),
-      isClosed: false,
-      // new fields default false/null but we set explicitly for clarity
-      reopenRequestedByClient: false,
-      reopenRequestedAt: null,
-      reopenRequestedBy: null,
-    });
-
-    request.pmAssigned = pm._id;
-    request.chatRoom = room._id;
-    await request.save();
-
-    // 🔔 Assignment notice MUST appear BEFORE the default greeting
+  // If no PM online → standby bubble (client-only)
+  if (!pm) {
     try {
-      const pmUser = await User.findById(pm._id).lean();
-      const pmName =
-        [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
-
-      // Persist a message stating the PM assignment (appears before greeting)
-      await Message.create({
-        room: room._id,
-        senderType: "User", // keep schema consistent
-        sender: pm._id,     // attribute to the PM account
-        text: `${pmName} HAS BEEN ASSIGNED TO BE YOUR PM.`,
-      });
-    } catch (_) {}
-
-    // Default greeting from the PM (visible to client when they join)
-    try {
-      const pmUser = await User.findById(pm._id).lean();
-      await Message.create({
-        room: room._id,
-        senderType: "User",
-        sender: pm._id,
+      await saveAndEmitSystemForClients({
+        roomId: room._id.toString(),
         text:
-          `Hi ${firstName}, I'm ${[pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "your PM"}.\n\n` +
-          `I'll be your Project Manager for “${projectTitle}”. Drop what you want us to build and any files you have — ` +
-          `let’s turn your idea into reality! 🚀`,
-      });
-    } catch (_) {}
-
-    // existing personal ping for PM inbox badge
-    try {
-      getIO()?.to(`user:${pm._id.toString()}`).emit("pm:request_assigned", {
-        requestId: request._id.toString(),
-        clientName: `${firstName} ${lastName}`.trim(),
-        projectTitle,
-        roomId: room?._id?.toString() || null,
-      });
-    } catch (_) {}
-
-    /* 🔔 Notify PM about assignment */
-    try {
-      await createAndEmit(pm._id, {
-        type: "PM_ASSIGNED",
-        title: "New project assigned",
-        body: `“${projectTitle || "Project"}” from ${firstName} ${lastName}`,
-        link: links.chatRoom(room._id),
-        meta: { requestId: request._id, roomId: room._id, projectTitle, clientName: `${firstName} ${lastName}` },
+          "All our PMs are currently assisting other clients. You're in the right place — a PM will join this chat shortly. Thanks for your patience!",
+        kind: "standby",
       });
     } catch {}
   }
 
-  // 🔔 SuperAdmins: new request came in
+  // SuperAdmins: keep receiving the original “new request” signal
   try {
     await notifySuperAdmins({
       type: "PROJECT_REQUEST",
@@ -167,6 +262,79 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
   return { request, pm, room };
 };
 
+/* -------------------- standby auto-assign on PM presence -------------------- */
+
+export const autoAssignFromStandby = async () => {
+  const pending = await ProjectRequest.findOne({
+    status: "Pending",
+    chatRoom: { $ne: null },
+    $or: [{ pmAssigned: null }, { pmAssigned: { $exists: false } }],
+  })
+    .sort({ createdAt: 1, _id: 1 })
+    .lean();
+
+  if (!pending) return { assigned: false };
+
+  const pm = await selectAndClaimOnlinePM();
+  if (!pm) return { assigned: false };
+
+  const ok = await safeSetPmAssigned(pending._id, pm._id);
+  if (!ok) {
+    await rollbackPmClaim(pm._id);
+    return { assigned: false };
+  }
+
+  const room = await ChatRoom.findById(pending.chatRoom).lean();
+  const reqDoc = await ProjectRequest.findById(pending._id);
+  await finalizePmAssignment({ request: reqDoc, room, pm });
+  return { assigned: true, requestId: String(reqDoc._id), pmId: String(pm._id) };
+};
+
+export const autoAssignFromStandbyForPM = async (pmId) => {
+  const pending = await ProjectRequest.findOne({
+    status: "Pending",
+    chatRoom: { $ne: null },
+    $or: [{ pmAssigned: null }, { pmAssigned: { $exists: false } }],
+  })
+    .sort({ createdAt: 1, _id: 1 })
+    .lean();
+
+  if (!pending) return { assigned: false };
+
+  // Try this specific PM first — only if free/online
+  let pm = await tryClaimSpecificPM(pmId, { preferFree: true, allowBusyFallback: false });
+
+  if (!pm) {
+    // If someone free exists, let general picker handle it; else pick least-loaded online
+    const someoneFree = await User.exists({
+      role: "PM",
+      isBusy: false,
+      online: true,
+      lastActive: { $gte: new Date(Date.now() - ONLINE_WINDOW_MS) },
+    });
+
+    if (someoneFree) return autoAssignFromStandby();
+
+    pm = await selectAndClaimOnlinePM();
+    if (!pm) return { assigned: false };
+  }
+
+  const ok = await safeSetPmAssigned(pending._id, pm._id);
+  if (!ok) {
+    await rollbackPmClaim(pm._id);
+    return { assigned: false };
+  }
+
+  const room = await ChatRoom.findById(pending.chatRoom).lean();
+  const reqDoc = await ProjectRequest.findById(pending._id);
+  await finalizePmAssignment({ request: reqDoc, room, pm });
+  return { assigned: true, requestId: String(reqDoc._id), pmId: String(pm._id) };
+};
+
+/* ========================================================================== */
+/*                            Remaining flows (unchanged)                      */
+/* ========================================================================== */
+
 export const setEngineerForRequest = async (requestId, engineerId, pmUser, auditMeta = {}) => {
   const req = await ProjectRequest.findById(requestId);
   if (!req) throw new Error("Request not found");
@@ -174,6 +342,17 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
 
   req.engineerAssigned = engineerId;
   await req.save();
+
+  // 🔴 Permanent system bubble (client-only): PM assigned an engineer
+  try {
+    const eng = await User.findById(engineerId).lean();
+    const engName = [eng?.firstName, eng?.lastName].filter(Boolean).join(" ");
+    await saveAndEmitSystemForClients({
+      roomId: req.chatRoom.toString(),
+      text: `PM has assigned the project to an Engineer${engName ? ` — (${engName})` : ""}.`,
+      kind: "pm_assigned_engineer",
+    });
+  } catch {}
 
   await logAudit({
     action: "ENGINEER_ASSIGNED",
@@ -185,7 +364,6 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
     meta: { engineerId, ...auditMeta },
   });
 
-  /* 🔔 Notify Engineer */
   try {
     await createAndEmit(engineerId, {
       type: "ENGINEER_ASSIGNED",
@@ -204,13 +382,18 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
   if (!req) throw new Error("Request not found");
   if (!req.engineerAssigned?.equals(engineerUser._id)) throw new Error("Not your request");
 
-  // idempotent flag so reopen knows we had an accepted engineer before
   if (req.__engineerAccepted) return req;
   req.__engineerAccepted = true;
   await req.save();
 
-  // ❌ Do NOT adjust workload here (to avoid double counting).
-  // Workload increments when the engineer accepts the TASK (task.service#engineerAcceptTask).
+  // 🔴 Permanent system bubble (client-only)
+  try {
+    await saveAndEmitSystemForClients({
+      roomId: req.chatRoom.toString(),
+      text: "Engineer has accepted the task and will be joining the room.",
+      kind: "engineer_accepted",
+    });
+  } catch {}
 
   await logAudit({
     action: "ENGINEER_ACCEPTED",
@@ -222,7 +405,6 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
     meta: auditMeta,
   });
 
-  /* 🔔 Notify PM + SuperAdmins */
   try {
     if (req.pmAssigned) {
       await createAndEmit(req.pmAssigned, {
@@ -253,12 +435,21 @@ export const markRequestReview = async (requestId, engineerUser, auditMeta = {})
   req.status = "Review";
   await req.save();
 
+  // 🔴 Permanent system bubble (client-only): Engineer completed work (ready for review)
+  try {
+    await saveAndEmitSystemForClients({
+      roomId: req.chatRoom.toString(),
+      text: "Engineer has completed the task. The project is ready for review.",
+      kind: "engineer_completed",
+    });
+  } catch {}
+
   try {
     getIO()?.to(req.chatRoom.toString()).emit("project:review", {
       requestId: req._id.toString(),
       status: "Review",
     });
-  } catch (_) {}
+  } catch {}
 
   await logAudit({
     action: "REQUEST_TO_REVIEW",
@@ -270,7 +461,6 @@ export const markRequestReview = async (requestId, engineerUser, auditMeta = {})
     meta: auditMeta,
   });
 
-  /* 🔔 Notify PM + SuperAdmins */
   try {
     if (req.pmAssigned) {
       await createAndEmit(req.pmAssigned, {
@@ -310,7 +500,7 @@ export const rateAndComplete = async (requestId, ratingPayload, auditMeta = {}) 
       requestId: req._id.toString(),
       ratings: req.ratings,
     });
-  } catch (_) {}
+  } catch {}
 
   await logAudit({
     action: "REQUEST_RATED",
@@ -322,7 +512,6 @@ export const rateAndComplete = async (requestId, ratingPayload, auditMeta = {}) 
     meta: ratingPayload ? { ...ratingPayload, ...auditMeta } : auditMeta,
   });
 
-  /* 🔔 Notify PM & Engineer & SuperAdmins */
   try {
     if (req.pmAssigned) {
       await createAndEmit(req.pmAssigned, {
@@ -385,7 +574,7 @@ export const closeRoomAndComplete = async (requestId, pmUser, auditMeta = {}) =>
       roomId: req.chatRoom.toString(),
       at: new Date().toISOString(),
     });
-  } catch (_) {}
+  } catch {}
 
   await logAudit({
     action: "REQUEST_COMPLETED",
@@ -399,7 +588,7 @@ export const closeRoomAndComplete = async (requestId, pmUser, auditMeta = {}) =>
 
   try {
     await notifySuperAdmins({
-      type: "PROJECT_CLOSED",
+      type: "PROJECT_COMPLETED",
       title: "Project completed",
       body: `“${req.projectTitle || "Project"}” marked Complete`,
       link: links.adminProject(req._id),
@@ -410,7 +599,7 @@ export const closeRoomAndComplete = async (requestId, pmUser, auditMeta = {}) =>
   return req;
 };
 
-/** ✅ NEW: client requests reopen (sets flags, notifies PM, emits socket) */
+/** Client asks to reopen a closed room */
 export const clientRequestsReopen = async (roomId, authUser, auditMeta = {}) => {
   const room = await ChatRoom.findById(roomId);
   if (!room) throw new Error("Room not found");
@@ -418,22 +607,18 @@ export const clientRequestsReopen = async (roomId, authUser, auditMeta = {}) => 
   const pr = await ProjectRequest.findOne({ chatRoom: room._id });
   if (!pr) throw new Error("Project not found for this room");
 
-  // ---- membership/ownership check (allow closed rooms) ----
   const isMember =
     room.members?.some?.((m) => m.toString() === authUser._id.toString()) ||
     (pr.clientId && pr.clientId.toString() === authUser._id.toString());
 
   if (!isMember) throw new Error("Forbidden: not a member of this room");
 
-  // Room must be closed to request reopen
   if (!room.isClosed) throw new Error("Room is not closed");
 
-  // If already requested, be idempotent
   if (!room.reopenRequestedByClient) {
     room.reopenRequestedByClient = true;
     await room.save();
 
-    // audit
     await logAudit({
       action: "CLIENT_REQUEST_REOPEN",
       actor: authUser._id || null,
@@ -444,7 +629,6 @@ export const clientRequestsReopen = async (roomId, authUser, auditMeta = {}) => 
       meta: auditMeta,
     });
 
-    // notify PM (if assigned)
     try {
       if (pr.pmAssigned) {
         const pm = await User.findById(pr.pmAssigned).lean();
@@ -461,7 +645,6 @@ export const clientRequestsReopen = async (roomId, authUser, auditMeta = {}) => 
           },
         });
 
-        // optional realtime ping to PM channel
         getIO()?.to(`user:${String(pm?._id || pr.pmAssigned)}`).emit("room:reopen_requested", {
           roomId: room._id.toString(),
           requestId: pr._id.toString(),
@@ -475,7 +658,6 @@ export const clientRequestsReopen = async (roomId, authUser, auditMeta = {}) => 
   return { room, project: pr };
 };
 
-// When PM actually reopens, clear the flag
 export const reopenRoomAndResume = async (requestId, pmUser, auditMeta = {}) => {
   const req = await ProjectRequest.findById(requestId);
   if (!req) throw new Error("Request not found");
@@ -483,12 +665,10 @@ export const reopenRoomAndResume = async (requestId, pmUser, auditMeta = {}) => 
 
   const room = req.chatRoom ? await ChatRoom.findById(req.chatRoom) : null;
   if (!room) throw new Error("Room not found");
-  if (!room.isClosed) return req; // idempotent: only act when actually closed
+  if (!room.isClosed) return req; // idempotent
 
-  // reopen the room
   await room.updateOne({ $set: { isClosed: false, reopenRequestedByClient: false } });
 
-  // ✅ Always bump workload on reopen
   if (req.pmAssigned) {
     await adjustTaskCount(req.pmAssigned, +1, { touchAssignDate: true });
   }
@@ -504,7 +684,7 @@ export const reopenRoomAndResume = async (requestId, pmUser, auditMeta = {}) => 
       roomId: req.chatRoom.toString(),
       at: new Date().toISOString(),
     });
-  } catch (_) {}
+  } catch {}
 
   await logAudit({
     action: "REQUEST_REOPENED",

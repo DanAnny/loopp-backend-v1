@@ -23,6 +23,25 @@ const fullName = (u) =>
 const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
   const plain = m.toObject?.() || m;
 
+  // ✅ System first-class: render as System, not as User
+  if (plain.senderType === "System") {
+    return {
+      _id: plain._id,
+      room: plain.room,
+      sender: null,
+      senderType: "System",
+      senderRole: "System",
+      senderName: "System",
+      clientEmail: null,
+      text: plain.text || "",
+      attachments: [],
+      createdAt: plain.createdAt,
+      updatedAt: plain.updatedAt,
+      visibleTo: plain.visibleTo || "All",
+      kind: plain.kind || null,
+    };
+  }
+
   let senderRole = "User";
   let senderName = "User";
 
@@ -30,8 +49,20 @@ const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
     senderRole = "Client";
     senderName = plain.senderName || plain.clientEmail || clientEmailFallback || "Client";
   } else if (plain.sender) {
-    const sid = typeof plain.sender === "string" ? plain.sender : plain.sender?._id?.toString?.();
+    const sid = typeof plain.sender === "string"
+      ? plain.sender
+      : plain.sender?._id?.toString?.();
     const u = usersById.get(sid) || (typeof plain.sender === "object" && plain.sender._id ? plain.sender : null);
+    const rolePretty = (r = "") => {
+      const s = r.toString();
+      if (/client/i.test(s)) return "Client";
+      if (/pm|project\s*manager/i.test(s)) return "PM";
+      if (/engineer/i.test(s)) return "Engineer";
+      if (/admin|super\s*admin/i.test(s)) return "PM";
+      return "User";
+    };
+    const fullName = (u) =>
+      [u?.firstName || u?.first_name, u?.lastName || u?.last_name].filter(Boolean).join(" ");
 
     senderRole = rolePretty(u?.role || plain.senderRole || "User");
     const fromDoc = fullName(u) || u?.name || u?.email?.split?.("@")?.[0] || "";
@@ -50,8 +81,11 @@ const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
     attachments: Array.isArray(plain.attachments) ? plain.attachments : [],
     createdAt: plain.createdAt,
     updatedAt: plain.updatedAt,
+    visibleTo: plain.visibleTo || "All",
+    kind: plain.kind || null,
   };
 };
+
 
 /* ========================================================================== */
 /*                           STAFF / MEMBER ENDPOINTS                         */
@@ -118,15 +152,25 @@ export const getMessages = async (req, res) => {
     const { roomId } = req.params;
     const { limit, cursor } = req.query;
 
-    const items = await chatService.getRoomMessages(roomId, req.user._id, Number(limit) || 50, cursor || null);
+    const items = await chatService.getRoomMessages(
+      roomId,
+      req.user._id,
+      Number(limit) || 50,
+      cursor || null
+    );
 
+    const filtered = items.filter(
+      (m) => m.visibleTo !== "Client" && m.senderType !== "System"
+    );
     const ids = [
-      ...new Set(items.filter((m) => m.senderType !== "Client" && m.sender).map((m) => m.sender.toString())),
+      ...new Set(filtered
+        .filter((m) => m.senderType !== "Client" && m.sender)
+        .map((m) => m.sender.toString()))
     ];
     const users = await User.find({ _id: { $in: ids } }, "firstName lastName email role").lean();
     const map = new Map(users.map((u) => [u._id.toString(), u]));
 
-    const shaped = items.map((m) => shapeMessage(m, map));
+    const shaped = filtered.map((m) => shapeMessage(m, map));
     res.json({ success: true, messages: shaped });
   } catch (e) {
     res.status(400).json({ success: false, message: e.message });

@@ -1,4 +1,3 @@
-// backend/src/models/Notification.js
 import mongoose from "mongoose";
 
 const NotificationSchema = new mongoose.Schema(
@@ -7,14 +6,16 @@ const NotificationSchema = new mongoose.Schema(
     type:   { type: String, required: true },
     title:  { type: String, required: true },
     body:   { type: String, default: "" },
-    link:   { type: String, default: "" },   // SA gets "", others may get /chat etc.
-    meta:   { type: Object, default: {} },   // should include requestId and/or taskId
+    link:   { type: String, default: "" },
+    meta:   { type: Object, default: {} },
     readAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
 
-// 🔒 Only one per (user,type,requestId,taskId)
+/* ------------ Indexes ------------ */
+NotificationSchema.index({ user: 1, createdAt: -1 });
+NotificationSchema.index({ user: 1, readAt: 1 });
 NotificationSchema.index(
   { user: 1, type: 1, "meta.requestId": 1, "meta.taskId": 1 },
   { unique: true, partialFilterExpression: { "meta.requestId": { $exists: true } } }

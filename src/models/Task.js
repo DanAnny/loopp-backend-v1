@@ -1,18 +1,11 @@
-// backend/src/models/Task.js
 import mongoose from "mongoose";
 
 export const TaskStatuses = ["Pending", "InProgress", "Complete"];
 
-/**
- * Coerce strings/numbers into real Date objects.
- * If the value is a YYYY-MM-DD string, normalize it to end-of-day local time.
- */
+/** Normalize incoming deadline values to real Dates (end-of-day for YYYY-MM-DD). */
 function toCoercedDateOrNull(v) {
   if (!v) return null;
-
-  if (v instanceof Date && !isNaN(v)) {
-    return v;
-  }
+  if (v instanceof Date && !isNaN(v)) return v;
 
   const d = new Date(v);
   if (isNaN(d)) return null;
@@ -23,7 +16,7 @@ function toCoercedDateOrNull(v) {
   return d;
 }
 
-const taskSchema = new mongoose.Schema(
+const TaskSchema = new mongoose.Schema(
   {
     request:  { type: mongoose.Schema.Types.ObjectId, ref: "ProjectRequest", required: true },
     pm:       { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
@@ -33,21 +26,17 @@ const taskSchema = new mongoose.Schema(
     description: { type: String, required: true },
 
     status:   { type: String, enum: TaskStatuses, default: "Pending" },
-    deadline: { type: Date, default: null }, // PM-set deadline (always a real Date after coercion)
+    deadline: { type: Date, default: null },
   },
   { timestamps: true }
 );
 
-// Coerce 'deadline' on create/save
-taskSchema.pre("save", function(next) {
-  if (this.isModified("deadline")) {
-    this.deadline = toCoercedDateOrNull(this.deadline);
-  }
+/* Normalize deadline on save/update */
+TaskSchema.pre("save", function(next) {
+  if (this.isModified("deadline")) this.deadline = toCoercedDateOrNull(this.deadline);
   next();
 });
-
-// Coerce 'deadline' on updates
-taskSchema.pre(["findOneAndUpdate", "updateOne", "updateMany"], function(next) {
+TaskSchema.pre(["findOneAndUpdate", "updateOne", "updateMany"], function(next) {
   const upd = this.getUpdate() || {};
   if (Object.prototype.hasOwnProperty.call(upd, "deadline")) {
     upd.deadline = toCoercedDateOrNull(upd.deadline);
@@ -60,4 +49,10 @@ taskSchema.pre(["findOneAndUpdate", "updateOne", "updateMany"], function(next) {
   next();
 });
 
-export const Task = mongoose.model("Task", taskSchema);
+/* ------------ Indexes ------------ */
+TaskSchema.index({ request: 1, createdAt: -1 });
+TaskSchema.index({ pm: 1, status: 1, createdAt: -1 });
+TaskSchema.index({ engineer: 1, status: 1, createdAt: -1 });
+TaskSchema.index({ deadline: 1, status: 1 });
+
+export const Task = mongoose.model("Task", TaskSchema);
