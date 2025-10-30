@@ -2,18 +2,45 @@ import mongoose from "mongoose";
 
 export const TaskStatuses = ["Pending", "InProgress", "Complete"];
 
-/** Normalize incoming deadline values to real Dates (end-of-day for YYYY-MM-DD). */
+/** Normalize incoming deadline values to Date (EOD for YYYY-MM-DD & DMY).
+ * Accepts: Date, ISO, YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY.
+ * Returns null if invalid/empty.
+ */
 function toCoercedDateOrNull(v) {
-  if (!v) return null;
+  if (v == null || v === "" || (typeof v === "string" && v.trim() === "")) return null;
   if (v instanceof Date && !isNaN(v)) return v;
+  if (typeof v === "number") return new Date(v);
 
-  const d = new Date(v);
-  if (isNaN(d)) return null;
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return null;
 
-  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) {
-    d.setHours(23, 59, 59, 999);
+    // YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T23:59:59.999Z`);
+
+    // DD/MM/YYYY
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+      const [d, m, y] = s.split("/").map(Number);
+      return new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+    }
+
+    // DD-MM-YYYY
+    if (/^\d{2}-\d{2}-\d{4}$/.test(s)) {
+      const [d, m, y] = s.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+    }
+
+    // MM/DD/YYYY
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+      // already handled above as DMY; to be explicit we keep ISO fallback below
+    }
+
+    // Fallback: let Date parse ISO and similar
+    const iso = new Date(s);
+    if (!isNaN(iso)) return iso;
   }
-  return d;
+
+  return null;
 }
 
 const TaskSchema = new mongoose.Schema(
@@ -26,12 +53,14 @@ const TaskSchema = new mongoose.Schema(
     description: { type: String, required: true },
 
     status:   { type: String, enum: TaskStatuses, default: "Pending" },
-    deadline: { type: Date, default: null },
+
+    // ✅ Setter ensures EVERY write path coerces deadline
+    deadline: { type: Date, default: null, set: toCoercedDateOrNull },
   },
   { timestamps: true }
 );
 
-/* Normalize deadline on save/update */
+/* Safety nets for legacy update code paths */
 TaskSchema.pre("save", function(next) {
   if (this.isModified("deadline")) this.deadline = toCoercedDateOrNull(this.deadline);
   next();
@@ -56,3 +85,4 @@ TaskSchema.index({ engineer: 1, status: 1, createdAt: -1 });
 TaskSchema.index({ deadline: 1, status: 1 });
 
 export const Task = mongoose.model("Task", TaskSchema);
+export { toCoercedDateOrNull };

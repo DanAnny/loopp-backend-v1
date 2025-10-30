@@ -7,13 +7,16 @@ import mongoose from "mongoose";
 
 export const createTask = async (req, res) => {
   try {
-    const { requestId, engineerId, title, description, deadline } = req.body;
+    // ⬇️ include pmDeadline from body
+    const { requestId, engineerId, title, description, deadline, pmDeadline } = req.body;
+
     const task = await taskService.createTaskForRequest(
-      { requestId, pmUser: req.user, engineerId, title, description, deadline },
+      // ⬇️ forward pmDeadline to the service (it already supports it)
+      { requestId, pmUser: req.user, engineerId, title, description, deadline, pmDeadline },
       fromReq(req)
     );
 
-    // real-time notify assigned engineer
+    // real-time notify assigned engineer (unchanged)
     const reqDoc = await ProjectRequest.findById(requestId).lean();
     getIO()?.to(`user:${engineerId}`).emit("task:assigned", {
       taskId: task._id,

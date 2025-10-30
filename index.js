@@ -1,4 +1,3 @@
-// index.js
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
@@ -8,10 +7,10 @@ import MongoStore from "connect-mongo";
 import passport from "passport";
 import createError from "http-errors";
 import http from "http";
-import compression from "compression";
+import compression, { filter as defaultCompressionFilter } from "compression";
 import helmet from "helmet";
 import { Server as SocketIOServer } from "socket.io";
-import { setIO, roomKey /*, saveAndEmitSystemForClients*/ } from "./src/lib/io.js";
+import { setIO, roomKey } from "./src/lib/io.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -47,9 +46,47 @@ app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
 // ---------- Security + gzip ----------
-app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-app.use(compression({ threshold: 1024 }));
+const helmetCsp = {
+  useDefaults: true,
+  directives: {
+    defaultSrc: ["'self'"],
+    baseUri: ["'self'"],
+    objectSrc: ["'none'"],
+    // allow data: and blob: for previews
+    imgSrc: ["'self'", "data:", "blob:"],
+    mediaSrc: ["'self'", "data:", "blob:"],
+    frameSrc: ["'self'", "blob:"], // <-- needed for PDF iframe via blob:
+    scriptSrc: ["'self'"],
+    scriptSrcAttr: ["'none'"],
+    styleSrc: ["'self'", "https:", "'unsafe-inline'"],
+    upgradeInsecureRequests: [],
+  },
+};
 
+app.use(
+  helmet({
+    contentSecurityPolicy: helmetCsp,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
+
+// ---------- Compression ----------
+// >>> Do NOT compress raw file streams from GridFS
+const FILE_STREAM_PREFIXES = ["/api/files/"]; // add others if you have them
+
+app.use(
+  compression({
+    threshold: 1024,
+    filter: (req, res) => {
+      const p = req.path || "";
+      if (p.startsWith("/api/files/")) return false;
+      if (p.startsWith("/api/chat/download")) return false;
+      return defaultCompressionFilter(req, res);
+    },
+  })
+);
+
+// ---------- CORS ----------
 const corsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true);
@@ -58,10 +95,34 @@ const corsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  // >>> Allow Range so partial content works cleanly end-to-end
+  allowedHeaders: ["Content-Type", "Authorization", "Range"],
 };
 app.use(cors(corsOptions));
+
+// cache preflight
 app.options(/.*/, cors(corsOptions));
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Max-Age", "86400"); // 24h
+  }
+  next();
+});
+
+// >>> Expose headers the browser should be allowed to read
+app.use((req, res, next) => {
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    [
+      "Content-Disposition",
+      "Content-Length",
+      "Content-Range",
+      "Accept-Ranges",
+      "X-Content-Type-Options",
+    ].join(", ")
+  );
+  next();
+});
 
 // ---------- Light middleware ----------
 app.use(express.urlencoded({ extended: true, limit: "100kb" }));
@@ -74,7 +135,7 @@ app.use(
   express.static(path.resolve(__dirname, "uploads"), { maxAge: "1h", etag: true })
 );
 
-// ---------- Session store (less churn) ----------
+// ---------- Session store ----------
 app.use(
   session({
     secret: config.sessionSecret,
@@ -280,7 +341,6 @@ io.on("connection", (socket) => {
     presenceCount.set(userId, count);
     await markUserActive(userId);
 
-    // Only thing we broadcast as inline presence: PM is actively online
     if (myUserDoc?.role === "PM") {
       io.to(`user:${userId}`).emit("system", {
         type: "pm_online",
@@ -288,12 +348,10 @@ io.on("connection", (socket) => {
         role: "PM",
         timestamp: new Date().toISOString(),
       });
-      // PM online -> attempt assignment (non-blocking)
       scheduleAssign();
     }
   })();
 
-  // ⚡ non-blocking: schedule, don't await
   socket.on("auth:logout", () => {
     const uid = socketOwners.get(socket.id);
     if (!uid) return;
@@ -316,28 +374,17 @@ io.on("connection", (socket) => {
       const room = await ChatRoom.findById(roomId).lean();
       if (!room) return socket.emit("error", "Room not found");
 
-      // Join room scopes (no extra banners)
-      socket.join(roomKey.all(roomId));
+      socket.join(roomId.toString());
       socket.emit("joined", roomId);
       if (uid) socket.join(`user:${String(uid)}`);
 
       const u = (uid && (await User.findById(uid).lean())) || {};
       const role = (u?.role || "User").toString();
-      if (/client/i.test(role)) socket.join(roomKey.clients(roomId));
-      else if (/pm|project\s*manager/i.test(role)) socket.join(roomKey.pms(roomId));
-      else if (/engineer/i.test(role)) socket.join(roomKey.engineers(roomId));
+      if (/client/i.test(role)) socket.join(`room:${roomId}:clients`);
+      else if (/pm|project\s*manager/i.test(role)) socket.join(`room:${roomId}:pms`);
+      else if (/engineer/i.test(role)) socket.join(`room:${roomId}:engineers`);
 
       if (uid) await markUserActive(String(uid));
-
-      // ----- NO "pm_assigned" inline banner -----
-      // We still ensure exactly-one welcome message using an atomic upsert:
-      // await saveAndEmitSystemForClients(
-      //   io,
-      //   roomId,
-      //   `Welcome ${u?.firstName || "User"}! An engineer will be with you shortly.`,
-      //   "welcome_message"
-      // );
-      // We do NOT emit: join/leave banners, engineer_online, "pm_assigned" inline, etc.
     } catch (e) {
       socket.emit("error", e.message);
     }
@@ -353,7 +400,7 @@ io.on("connection", (socket) => {
       else room.typing.delete(String(uid));
       await room.save();
 
-      socket.to(roomKey.all(roomId)).emit("typing", { roomId, userId: uid, role, isTyping });
+      socket.to(roomId.toString()).emit("typing", { roomId, userId: uid, role, isTyping });
     } catch {}
   });
 
@@ -373,7 +420,7 @@ io.on("connection", (socket) => {
         attachments,
       });
 
-      io.to(roomKey.all(roomId)).emit("message", {
+      io.to(roomId.toString()).emit("message", {
         _id: msg._id,
         room: roomId,
         sender: uid,
@@ -391,11 +438,10 @@ io.on("connection", (socket) => {
 
   socket.on("leave", async ({ roomId }) => {
     try {
-      socket.leave(roomKey.all(roomId));
-      socket.leave(roomKey.clients(roomId));
-      socket.leave(roomKey.pms(roomId));
-      socket.leave(roomKey.engineers(roomId));
-      // No leave banner emitted
+      socket.leave(roomId.toString());
+      socket.leave(`room:${roomId}:clients`);
+      socket.leave(`room:${roomId}:pms`);
+      socket.leave(`room:${roomId}:engineers`);
     } catch {}
   });
 

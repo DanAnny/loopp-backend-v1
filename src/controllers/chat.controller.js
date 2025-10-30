@@ -20,10 +20,12 @@ const rolePretty = (r = "") => {
 const fullName = (u) =>
   [u?.firstName || u?.first_name, u?.lastName || u?.last_name].filter(Boolean).join(" ");
 
+// inside chat.controller.js
+
 const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
   const plain = m.toObject?.() || m;
 
-  // ✅ System first-class: render as System, not as User
+  // System messages
   if (plain.senderType === "System") {
     return {
       _id: plain._id,
@@ -34,40 +36,54 @@ const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
       senderName: "System",
       clientEmail: null,
       text: plain.text || "",
-      attachments: [],
+      attachments: [], // system never carries files in our UI
       createdAt: plain.createdAt,
       updatedAt: plain.updatedAt,
       visibleTo: plain.visibleTo || "All",
       kind: plain.kind || null,
+      // helpful for UI time formatting
+      createdAtISO: new Date(plain.createdAt || Date.now()).toISOString(),
     };
   }
 
+  // resolve sender
   let senderRole = "User";
   let senderName = "User";
 
+  // resolve sender
   if (plain.senderType === "Client") {
     senderRole = "Client";
-    senderName = plain.senderName || plain.clientEmail || clientEmailFallback || "Client";
+
+    // ✅ prefer full name over email
+    const full = [plain.firstName, plain.lastName].filter(Boolean).join(" ");
+    senderName = plain.senderName || full || plain.clientEmail?.split("@")[0] || "Client";
+
   } else if (plain.sender) {
     const sid = typeof plain.sender === "string"
       ? plain.sender
       : plain.sender?._id?.toString?.();
     const u = usersById.get(sid) || (typeof plain.sender === "object" && plain.sender._id ? plain.sender : null);
-    const rolePretty = (r = "") => {
-      const s = r.toString();
-      if (/client/i.test(s)) return "Client";
-      if (/pm|project\s*manager/i.test(s)) return "PM";
-      if (/engineer/i.test(s)) return "Engineer";
-      if (/admin|super\s*admin/i.test(s)) return "PM";
-      return "User";
-    };
-    const fullName = (u) =>
-      [u?.firstName || u?.first_name, u?.lastName || u?.last_name].filter(Boolean).join(" ");
 
-    senderRole = rolePretty(u?.role || plain.senderRole || "User");
-    const fromDoc = fullName(u) || u?.name || u?.email?.split?.("@")?.[0] || "";
-    senderName = plain.senderName || fromDoc || senderRole;
+    const r = (u?.role || plain.senderRole || "User").toString();
+    if (/client/i.test(r)) senderRole = "Client";
+    else if (/pm|project\s*manager/i.test(r) || /admin|super\s*admin/i.test(r)) senderRole = "PM";
+    else if (/engineer/i.test(r)) senderRole = "Engineer";
+    else senderRole = "User";
+
+    const full = [u?.firstName, u?.lastName].filter(Boolean).join(" ");
+    senderName = plain.senderName || full || u?.username || u?.email?.split("@")[0] || senderRole;
   }
+
+  // ✅ normalize attachments for the frontend viewer
+  const normalizedAttachments = Array.isArray(plain.attachments)
+    ? plain.attachments.map((a) => ({
+        url: `/api/files/${a.fileId}?download=0`,      // inline preview
+        name: a.filename,
+        type: a.contentType || "application/octet-stream",
+        size: a.length,
+        fileId: a.fileId,                               // keep original if needed
+      }))
+    : [];
 
   return {
     _id: plain._id,
@@ -78,14 +94,14 @@ const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
     senderName,
     clientEmail: plain.clientEmail || null,
     text: plain.text || "",
-    attachments: Array.isArray(plain.attachments) ? plain.attachments : [],
+    attachments: normalizedAttachments,
     createdAt: plain.createdAt,
     updatedAt: plain.updatedAt,
     visibleTo: plain.visibleTo || "All",
     kind: plain.kind || null,
+    createdAtISO: new Date(plain.createdAt || Date.now()).toISOString(),
   };
 };
-
 
 /* ========================================================================== */
 /*                           STAFF / MEMBER ENDPOINTS                         */

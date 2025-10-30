@@ -1,4 +1,3 @@
-// backend/src/controllers/project.controller.js
 import * as projectService from "../services/project.service.js";
 import { fromReq } from "../services/audit.service.js";
 import { getIO } from "../lib/io.js";
@@ -32,12 +31,32 @@ function attachPeopleNames(p) {
   };
 }
 
-/** pick a representative task for a request (latest updated) */
+/** pick the latest-updated task (used for status/updatedAt) */
 function pickRepresentativeTask(tasksForRequest) {
   if (!tasksForRequest || tasksForRequest.length === 0) return null;
   return tasksForRequest
     .slice()
     .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt) || new Date(b.createdAt) - new Date(a.createdAt))[0];
+}
+
+/** pick the most relevant deadline for dashboards:
+ *  nearest future deadline; otherwise latest past deadline
+ */
+function pickRelevantDeadline(tasks = []) {
+  const withDeadline = tasks.filter(t => t.deadline);
+  if (withDeadline.length === 0) return null;
+
+  const now = Date.now();
+
+  const future = withDeadline
+    .filter(t => new Date(t.deadline).getTime() >= now)
+    .sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
+
+  if (future.length) return future[0].deadline;
+
+  // else latest past deadline
+  return withDeadline
+    .sort((a, b) => new Date(b.deadline) - new Date(a.deadline))[0].deadline;
 }
 
 /* ========================================================================== */
@@ -47,7 +66,6 @@ function pickRepresentativeTask(tasksForRequest) {
 export const intakeFromWordPress = async (req, res) => {
   try {
     const src = req.body || {};
-    console.log("WP Intake:", src);
     const {
       firstName,
       lastName,
@@ -107,11 +125,13 @@ export const listProjects = async (req, res) => {
     }
 
     const enriched = items.map((p) => {
-      const rep = pickRepresentativeTask(byReq.get(String(p._id)) || []);
+      const ts = byReq.get(String(p._id)) || [];
+      const rep = pickRepresentativeTask(ts);
+      const relDeadline = pickRelevantDeadline(ts);
       return {
         ...p,
         status: prettyStatus(p.status),
-        taskDeadline: rep?.deadline ?? null,     // <- use this on the frontend
+        taskDeadline: relDeadline ?? null,
         taskStatus:   rep?.status   ?? null,
         taskUpdatedAt:rep?.updatedAt ?? null,
       };
@@ -134,6 +154,7 @@ export const getProjectById = async (req, res) => {
       .select("request deadline status updatedAt createdAt")
       .lean();
     const rep = pickRepresentativeTask(tasks);
+    const relDeadline = pickRelevantDeadline(tasks);
 
     // add reopen flag from room if exists
     let reopenRequested = false;
@@ -147,7 +168,7 @@ export const getProjectById = async (req, res) => {
       project: {
         ...item,
         status: prettyStatus(item.status),
-        taskDeadline: rep?.deadline ?? null,
+        taskDeadline: relDeadline ?? null,
         taskStatus: rep?.status ?? null,
         taskUpdatedAt: rep?.updatedAt ?? null,
         reopenRequested, // ✅
@@ -258,34 +279,6 @@ export const pmReopenRequest = async (req, res) => {
   }
 };
 
-/** ✅ NEW: Client action to request reopen */
-// export const clientRequestReopen = async (req, res) => {
-//   try {
-//     const { roomId, requestId } = req.body || {};
-//     let rid = roomId;
-
-//     // allow either roomId or requestId
-//     if (!rid && requestId) {
-//       const pr = await ProjectRequest.findById(requestId).lean();
-//       if (!pr?.chatRoom) return res.status(400).json({ success: false, message: "No room for this request" });
-//       rid = pr.chatRoom.toString();
-//     }
-
-//     if (!rid) return res.status(400).json({ success: false, message: "roomId or requestId is required" });
-
-//     const { room, project } = await projectService.clientRequestsReopen(rid, req.user, fromReq(req));
-
-//     res.json({
-//       success: true,
-//       room: { id: room._id, isClosed: !!room.isClosed, reopenRequestedByClient: !!room.reopenRequestedByClient },
-//       project: { id: project._id, status: project.status },
-//       message: "Reopen request sent to your PM.",
-//     });
-//   } catch (e) {
-//     res.status(400).json({ success: false, message: e.message });
-//   }
-// };
-
 /* ========================================================================== */
 /* DASH OVERVIEW */
 /* ========================================================================== */
@@ -346,10 +339,12 @@ export const listProjectsNamed = async (req, res) => {
     const roomFlagMap = new Map(rooms.map(r => [String(r.request), !!r.reopenRequestedByClient]));
 
     const withPeople = items.map(attachPeopleNames).map(p => {
-      const rep = pickRepresentativeTask(byReq.get(String(p._id)) || []);
+      const ts = byReq.get(String(p._id)) || [];
+      const rep = pickRepresentativeTask(ts);
+      const relDeadline = pickRelevantDeadline(ts);
       return {
         ...p,
-        taskDeadline: rep?.deadline ?? null,
+        taskDeadline: relDeadline ?? null,
         taskStatus: rep?.status ?? null,
         taskUpdatedAt: rep?.updatedAt ?? null,
         reopenRequested: roomFlagMap.get(String(p._id)) || false,
@@ -376,7 +371,9 @@ export const getProjectByIdNamed = async (req, res) => {
     const tasks = await Task.find({ request: item._id })
       .select("request deadline status updatedAt createdAt")
       .lean();
+
     const rep = pickRepresentativeTask(tasks);
+    const relDeadline = pickRelevantDeadline(tasks);
 
     // reopen flag
     let reopenRequested = false;
@@ -389,7 +386,7 @@ export const getProjectByIdNamed = async (req, res) => {
       success: true,
       project: {
         ...attachPeopleNames(item),
-        taskDeadline: rep?.deadline ?? null,
+        taskDeadline: relDeadline ?? null,
         taskStatus: rep?.status ?? null,
         taskUpdatedAt: rep?.updatedAt ?? null,
         reopenRequested,
@@ -416,6 +413,7 @@ export const getProjectByRoomNamed = async (req, res) => {
       .select("request deadline status updatedAt createdAt")
       .lean();
     const rep = pickRepresentativeTask(tasks);
+    const relDeadline = pickRelevantDeadline(tasks);
 
     const room = await ChatRoom.findById(roomId).lean();
 
@@ -423,7 +421,7 @@ export const getProjectByRoomNamed = async (req, res) => {
       success: true,
       project: {
         ...attachPeopleNames(pr),
-        taskDeadline: rep?.deadline ?? null,
+        taskDeadline: relDeadline ?? null,
         taskStatus: rep?.status ?? null,
         taskUpdatedAt: rep?.updatedAt ?? null,
         reopenRequested: !!room?.reopenRequestedByClient, // ✅
@@ -523,7 +521,6 @@ export const createFromClient = async (req, res) => {
     // If a request with this clientKey already exists, CLAIM it for this user and ensure membership
     const existing = await ProjectRequest.findOne({ clientKey }).lean();
     if (existing) {
-      // If this PR is not owned by the current user, or has no owner, set owner to current user
       const shouldClaim =
         !existing.clientId ||
         existing.clientId.toString() !== me._id.toString();
@@ -534,7 +531,6 @@ export const createFromClient = async (req, res) => {
           {
             $set: {
               clientId: me._id,
-              // backfill identity fields only if empty
               firstName: existing.firstName || me.firstName || firstName || "",
               lastName: existing.lastName || me.lastName || lastName || "",
               email: existing.email || me.email || email || "",
@@ -543,7 +539,6 @@ export const createFromClient = async (req, res) => {
         );
       }
 
-      // If a room already exists, make sure the current user is a member
       if (existing.chatRoom) {
         await ChatRoom.updateOne(
           { _id: existing.chatRoom },
@@ -560,7 +555,6 @@ export const createFromClient = async (req, res) => {
       });
     }
 
-    // No existing PR — create a new one with the authenticated client as owner
     const payload = {
       firstName: firstName || me.firstName || "",
       lastName: lastName || me.lastName || "",
@@ -603,11 +597,11 @@ export const getProjectByRoom = async (req, res) => {
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
 
-    // include representative task deadline for parity with other endpoints
     const tasks = await Task.find({ request: pr._id })
       .select("request deadline status updatedAt createdAt")
       .lean();
     const rep = pickRepresentativeTask(tasks);
+    const relDeadline = pickRelevantDeadline(tasks);
 
     const room = await ChatRoom.findById(roomId).lean();
 
@@ -616,7 +610,7 @@ export const getProjectByRoom = async (req, res) => {
       project: {
         ...pr,
         status: prettyStatus(pr.status),
-        taskDeadline: rep?.deadline ?? null,
+        taskDeadline: relDeadline ?? null,
         taskStatus: rep?.status ?? null,
         taskUpdatedAt: rep?.updatedAt ?? null,
         reopenRequested: !!room?.reopenRequestedByClient, // ✅
@@ -632,7 +626,6 @@ export const clientRequestReopen = async (req, res) => {
     const { roomId, requestId } = req.body || {};
     let rid = roomId;
 
-    // allow either roomId or requestId
     if (!rid && requestId) {
       const pr = await ProjectRequest.findById(requestId).lean();
       if (!pr?.chatRoom) return res.status(400).json({ success: false, message: "No room for this request" });

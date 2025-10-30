@@ -37,7 +37,7 @@ UserSchema.plugin(passportLocalMongoose, {
 
 /* ------------ Indexes (CRITICAL for speed) ------------ */
 UserSchema.index({ role: 1 });
-UserSchema.index({ email: 1 }, { unique: true, sparse: true });
+// UserSchema.index({ email: 1 }, { unique: true, sparse: true });
 UserSchema.index({ online: 1, lastActive: 1 });                   // presence sweep
 UserSchema.index({ isBusy: 1, online: 1, lastActive: 1 });         // PM selection
 UserSchema.index({ numberOfTask: 1, lastDateTaskAssign: 1, _id: 1 }); // stable sort for selection

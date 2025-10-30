@@ -63,14 +63,21 @@ export const postMessage = async (roomId, senderUser, { text = "", attachments =
  * Get messages (authenticated user)
  * - Allows reads even when room is closed
  */
-export const getRoomMessages = async (roomId, userId, limit = 50, cursor = null) => {
+export async function getRoomMessages(roomId, userId, limit = 50, cursor = null) {
   await ensureMember(roomId, userId, { allowClosed: true });
 
-  const query = { room: roomId };
-  if (cursor) query._id = { $lt: cursor };
-  const items = await Message.find(query).sort({ _id: -1 }).limit(limit).lean();
-  return items.reverse();
-};
+  const q = { room: roomId };
+  if (cursor) q._id = { $lt: cursor };
+
+  // Projection = only what UI needs; pairs with {room:1,_id:-1} index
+  const docs = await Message
+    .find(q, { _id: 1, room: 1, sender: 1, senderType: 1, text: 1, attachments: 1, createdAt: 1, visibleTo: 1, kind: 1 })
+    .sort({ _id: -1 })
+    .limit(Math.max(1, Math.min(200, limit)))
+    .lean();
+
+  return docs.reverse();
+}
 
 /* -------------------------- Client via clientKey -------------------------- */
 
@@ -120,6 +127,13 @@ export const clientFetch = async ({ requestId, clientKey, limit = 50, cursor = n
 
   const query = { room: req.chatRoom };
   if (cursor) query._id = { $lt: cursor };
-  const items = await Message.find(query).sort({ _id: -1 }).limit(limit).lean();
+
+  // Match the same projection as authenticated reads for speed + consistency
+  const items = await Message
+    .find(query, { _id: 1, room: 1, sender: 1, senderType: 1, text: 1, attachments: 1, createdAt: 1, visibleTo: 1, kind: 1 })
+    .sort({ _id: -1 })
+    .limit(Math.max(1, Math.min(200, limit)))
+    .lean();
+
   return items.reverse();
 };

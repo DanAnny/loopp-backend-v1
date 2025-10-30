@@ -16,23 +16,22 @@ const MessageSchema = new mongoose.Schema(
 
     senderType: { type: String, enum: ["User", "Client", "System"], default: "User" },
 
-    sender:      { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // when User
-    clientEmail: { type: String, lowercase: true },                      // when Client
+    sender:      { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    clientEmail: { type: String, lowercase: true },
+    clientName:  { type: String },
 
     text:        { type: String, default: "" },
     attachments: [attachmentSchema],
 
-    // audience control
     visibleTo: { type: String, enum: ["All", "Client", "Staff"], default: "All" },
-
-    // optional classifier for system messages
     kind: { type: String, default: null },
   },
   { timestamps: true }
 );
 
 /* ------------ Indexes ------------ */
-MessageSchema.index({ room: 1, createdAt: -1 }); // key for fast message lists
+MessageSchema.index({ room: 1, createdAt: -1 }); // existing
+MessageSchema.index({ room: 1, _id: -1 });       // NEW: fastest cursor by _id
 MessageSchema.index({ sender: 1, createdAt: -1 });
 MessageSchema.index({ kind: 1, room: 1, createdAt: -1 });
 

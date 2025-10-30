@@ -50,7 +50,7 @@ async function adjustTaskCount(userId, delta, { touchAssignDate = false } = {}) 
 async function safeSetPmAssigned(requestId, pmId) {
   const res = await ProjectRequest.updateOne(
     { _id: requestId, $or: [{ pmAssigned: null }, { pmAssigned: { $exists: false } }] },
-    { $set: { pmAssigned: pmId, status: "InProgress" } }
+    { $set: { pmAssigned: pmId, status: "Pending" } }
   );
   return res.modifiedCount > 0;
 }

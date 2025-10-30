@@ -1,8 +1,8 @@
-// backend/src/services/task.service.js
 import { Task } from "../models/Task.js";
 import { ProjectRequest } from "../models/ProjectRequest.js";
 import { ChatRoom } from "../models/ChatRoom.js";
 import { User } from "../models/User.js";
+import { Message } from "../models/Message.js"; // ✅ ensure available
 import { logAudit } from "./audit.service.js";
 import { getIO } from "../lib/io.js";
 import mongoose from "mongoose";
@@ -13,13 +13,27 @@ import { createAndEmit, notifySuperAdmins, links } from "./notify.service.js";
 // NEW: system inline emitter
 import { emitSystem } from "../lib/events.js";
 
-/** Parse 'YYYY-MM-DD' into a UTC Date (00:00:00). Returns null if invalid. */
-function parseYmdToUtcDate(ymd) {
-  if (!ymd || typeof ymd !== "string") return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
-  const [y, m, d] = ymd.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
-  return isFinite(dt) ? dt : null;
+/** Robust deadline coercion:
+ *  - null/undefined/"" → null
+ *  - YYYY-MM-DD → end of day UTC
+ *  - ISO / Date / number → Date
+ */
+function coerceDeadline(v) {
+  if (!v) return null;
+  if (v instanceof Date && !isNaN(v)) return v;
+  if (typeof v === "number") return new Date(v);
+
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return null;
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      return new Date(`${s}T23:59:59.999Z`);
+    }
+    const d = new Date(s);
+    if (!isNaN(d)) return d;
+  }
+  return null;
 }
 
 /* ---------------- PM creates the single task (assigns engineer too) -------- */
@@ -41,12 +55,7 @@ export const createTaskForRequest = async (
   await req.save();
 
   // pick deadline from either `deadline` or `pmDeadline`
-  const chosenDeadline =
-    deadline
-      ? parseYmdToUtcDate(deadline) || new Date(deadline)
-      : pmDeadline
-      ? parseYmdToUtcDate(pmDeadline)
-      : null;
+  const chosenDeadline = coerceDeadline(deadline) ?? coerceDeadline(pmDeadline);
 
   // create task (Assigned/Pending)
   const task = await Task.create({
@@ -58,7 +67,7 @@ export const createTaskForRequest = async (
     deadline: chosenDeadline || null,
   });
 
-  // 🔵 INLINE NOTICE: PM HAS ASSIGNED THE PROJECT TO AN ENGINEER (First Last)
+  // 🔵 INLINE NOTICE: PM HAS ASSIGNED THE PROJECT TO AN ENGINEER
   try {
     if (req.chatRoom) {
       const eng = await User.findById(engineerId).lean();
@@ -71,9 +80,6 @@ export const createTaskForRequest = async (
       });
     }
   } catch {}
-
-  // ❌ Do NOT bump engineer workload on assignment.
-  // Workload increments only when the engineer ACCEPTS the task.
 
   // ✅ persistent notification to the Engineer
   try {
@@ -135,8 +141,7 @@ export const engineerAcceptTask = async (taskId, engineerUser, auditMeta = {}) =
     }
   }
 
-  const alreadyInProgress =
-    String(task.status || "").toLowerCase() === "inprogress";
+  const alreadyInProgress = String(task.status || "").toLowerCase() === "inprogress";
   if (!alreadyInProgress) {
     await User.updateOne(
       { _id: engineerUser._id },
@@ -165,18 +170,22 @@ export const engineerAcceptTask = async (taskId, engineerUser, auditMeta = {}) =
     meta: auditMeta,
   });
 
-  // 🔵 INLINE NOTICE: ENGINEER HAS ACCEPTED...
+  // 🔵 INLINE NOTICE
   try {
     if (req.chatRoom) {
       emitSystem(req.chatRoom, {
         type: "engineer_accepted",
         role: "Engineer",
-        engineer: { id: String(engineerUser._id), firstName: engineerUser.firstName || "", lastName: engineerUser.lastName || "" },
+        engineer: {
+          id: String(engineerUser._id),
+          firstName: engineerUser.firstName || "",
+          lastName: engineerUser.lastName || "",
+        },
       });
     }
   } catch {}
 
-  // 🔔 Notify PM & SuperAdmins (existing)
+  // 🔔 Notify PM & SuperAdmins
   try {
     if (req.pmAssigned) {
       await createAndEmit(req.pmAssigned, {
@@ -227,17 +236,15 @@ export const engineerCompleteTask = async (taskId, engineerUser, auditMeta = {})
     meta: auditMeta,
   });
 
-  // 🔔 Notify the chat room and PERSIST the inline system notice
+  // 🔔 Notify chat room and persist inline system notice
   if (movedToReview && req.chatRoom) {
     const roomId = req.chatRoom.toString();
     try {
-      // Optional event that you already had
       getIO()?.to(roomId).emit("project:review", {
         requestId: req._id.toString(),
         status: "Review",
       });
 
-      // PERSISTED System notice with your requested copy
       const text =
         "---- Project has been submitted; type /rate and click send to rate the PM, Engineer, and their teamwork ----";
       const msg = await Message.create({
@@ -260,7 +267,7 @@ export const engineerCompleteTask = async (taskId, engineerUser, auditMeta = {})
     } catch (_) {}
   }
 
-  // Persistent notifications (unchanged)
+  // Persistent notifications
   try {
     if (req.pmAssigned) {
       await createAndEmit(req.pmAssigned, {
