@@ -18,6 +18,64 @@ import { createAndEmit, notifySuperAdmins, links } from "./notify.service.js";
 /* NEW: scoped emit + persist for client-only system bubbles */
 import { roomKey, saveAndEmitSystemForClients } from "../lib/io.js";
 
+/* -------------------------------- FOLLOW-UP SCHEDULER -------------------------------- */
+
+async function startStandbyFollowups(roomId, requestId) {
+  const io = getIO();
+  if (!io) return;
+
+  // internal helper to safely send message
+  const send = async (text, kind) => {
+    try {
+      await saveAndEmitSystemForClients({ roomId, text, kind });
+    } catch {}
+  };
+
+  const intervals = [30_000, 40_000]; // 30s, 40s after that, then every 60s later
+  let tick = 0;
+  let stopped = false;
+
+  const loop = async () => {
+    if (stopped) return;
+
+    const req = await ProjectRequest.findById(requestId).select("pmAssigned").lean();
+    if (!req || req.pmAssigned) return; // stop once assigned
+
+    // check active presence: at least one socket joined this room's clients
+    const roomClients = io.sockets.adapter.rooms.get(`room:${roomId}:clients`);
+    const isActive = roomClients && roomClients.size > 0;
+    if (!isActive) {
+      // if client left, pause — retry later when they rejoin
+      setTimeout(loop, 15_000);
+      return;
+    }
+
+    tick++;
+    if (tick === 1) {
+      await send(
+        "We’re still connecting you to an available Project Manager. Thanks for holding on!",
+        "followup_30s"
+      );
+      setTimeout(loop, intervals[1]);
+    } else if (tick === 2) {
+      await send(
+        "Almost there — our team is finishing with other clients and will join shortly.",
+        "followup_40s"
+      );
+      setTimeout(loop, 60_000); // after this, every 60 s
+    } else {
+      await send(
+        "Thanks for your patience. We’re still finding the best Project Manager to assist you.",
+        "followup_repeat"
+      );
+      setTimeout(loop, 60_000);
+    }
+  };
+
+  // first follow-up at 30 s
+  setTimeout(loop, intervals[0]);
+}
+
 /* ----------------------- helpers: workload & busy state ----------------------- */
 
 async function adjustTaskCount(userId, delta, { touchAssignDate = false } = {}) {
@@ -240,6 +298,9 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
           "All our PMs are currently assisting other clients. You're in the right place — a PM will join this chat shortly. Thanks for your patience!",
         kind: "standby",
       });
+
+      // 🔁 Schedule polite follow-ups
+      startStandbyFollowups(room._id.toString(), request._id.toString());
     } catch {}
   }
 
