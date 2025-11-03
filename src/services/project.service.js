@@ -61,27 +61,43 @@ async function rollbackPmClaim(pmId) {
   await adjustTaskCount(pmId, -1);
 }
 
-/* ------------------------- finalize assignment (messages etc.) ------------------------- */
 async function finalizePmAssignment({ request, room, pm }) {
   // ensure membership includes PM
   await ChatRoom.updateOne({ _id: room._id }, { $addToSet: { members: pm._id } });
-
   // also persist PM onto the room so sockets/UI can detect "already assigned"
   await ChatRoom.updateOne({ _id: room._id }, { $set: { pm: pm._id } });
 
-  // 🔴 permanent SYSTEM bubble (client-only) — persisted + emitted in real time
+  // small helper to yield a micro-tick to the event loop
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
   try {
     const pmUser = await User.findById(pm._id).lean();
-    const pmName =
-      [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
+    const pmName = [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
 
+    // 1) Persist + emit the CLIENT-ONLY system bubble first
     await saveAndEmitSystemForClients({
       roomId: room._id.toString(),
       kind: "pm_assigned",
       text: `${pmName} has been assigned as your PM. They’ll join shortly.`,
     });
 
-    // ✅ Immediately create (idempotent) PM welcome and emit to the room
+    // 2) Immediately inform the room (used by clients to show the inline banner)
+    getIO()?.to(room._id.toString()).emit("room:pm_assigned", {
+      roomId: room._id.toString(),
+      requestId: String(request._id),
+      pm: {
+        id: String(pm._id),
+        firstName: pmUser?.firstName || "",
+        lastName: pmUser?.lastName || "",
+        email: pmUser?.email || "",
+      },
+      at: new Date().toISOString(),
+    });
+
+    // Give the socket a micro-tick so the above always lands before any welcome message
+    await tick();
+
+    // 3) Upsert the PM welcome (idempotent); emit only if newly inserted
     const welcomeText =
       `Hi! I’m ${pmName}. I’ll coordinate this project and keep you updated here. ` +
       `Please share requirements, files, or questions anytime — we’ll get rolling.`;
@@ -116,23 +132,12 @@ async function finalizePmAssignment({ request, room, pm }) {
           senderName: pmName,
           text: welcomeText,
           attachments: [],
-          createdAt: msgDoc.createdAt,
+          createdAt: msgDoc.createdAt, // keep DB timestamp
         });
     }
-
-    // explicit event so client header can update instantly (even before PM sends a message)
-    getIO()?.to(room._id.toString()).emit("room:pm_assigned", {
-      roomId: room._id.toString(),
-      requestId: String(request._id),
-      pm: {
-        id: String(pm._id),
-        firstName: pmUser?.firstName || "",
-        lastName: pmUser?.lastName || "",
-        email: pmUser?.email || "",
-      },
-      at: new Date().toISOString(),
-    });
-  } catch {}
+  } catch {
+    // swallow — non-critical for ordering guarantees
+  }
 
   // (C) notify PM (badge + in-app)
   try {
