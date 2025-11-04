@@ -22,15 +22,11 @@ const fromHeader  = normalizeFrom(config?.smtp?.mailFrom);
 const BASE_OPTS = {
   host: smtpHost,
   auth: { user: smtpUser, pass: smtpPass },
-  // Prefer IPv4 to avoid odd IPv6 routes that can time out on some hosts
   family: 4,
-  // More generous timeouts for slower greetings
   connectionTimeout: 20000,
   greetingTimeout:   15000,
   socketTimeout:     30000,
-  // TLS policy
   tls: { minVersion: "TLSv1.2" },
-  // Light pooling
   pool: true,
   maxConnections: 5,
   maxMessages: 100,
@@ -43,7 +39,7 @@ async function makeTransportTry(port, secure) {
     ...BASE_OPTS,
     port,
     secure,                 // 587 => false (STARTTLS), 465 => true (implicit TLS)
-    requireTLS: !secure,    // STARTTLS requires TLS upgrade
+    requireTLS: !secure,
   });
   await t.verify();
   return t;
@@ -55,7 +51,6 @@ async function buildTransport() {
     return null;
   }
 
-  // If user forced a port, only try that mode
   if (forcedPort) {
     const secure = String(forcedPort) === "465";
     try {
@@ -68,7 +63,6 @@ async function buildTransport() {
     }
   }
 
-  // Default: try 587 (STARTTLS) then 465 (implicit TLS)
   try {
     const t587 = await makeTransportTry(587, false);
     console.log("[mailer] ✅ SMTP verified on 587 (STARTTLS)");
@@ -129,15 +123,31 @@ async function safeSend({ to, bcc, subject, html, text }) {
 }
 
 /* ============================================================================
- * Shared Template Utilities
+ * Black & White Template Utilities (no buttons)
  * ========================================================================== */
 
 const BRAND_COLOR = "#111";
-const ACCENT      = "#0EA5E9";
-const MUTED       = "#6b7280";
-const BORDER      = "#e5e7eb";
+const TEXT       = "#111";
+const MUTED      = "#444";
+const BORDER     = "#e5e7eb";
+const BG         = "#f8f8f8";
 
-function wrapHtml(inner, title = "Loopp") {
+/**
+ * Wraps email body with a B/W shell. Optional header image.
+ * @param {string} inner
+ * @param {string} title
+ * @param {string|null} headerImgUrl
+ */
+function wrapHtmlBW(inner, title = "Loopp", headerImgUrl = null) {
+  const headerImg = headerImgUrl
+    ? `<div style="text-align:center;margin:0 0 16px 0">
+         <img src="${escapeHtml(headerImgUrl)}" alt="Header" style="max-width:180px;height:auto;display:inline-block" />
+       </div>`
+    : `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+         <div style="width:10px;height:10px;border-radius:999px;background:#000"></div>
+         <span style="font-weight:600;color:${MUTED};letter-spacing:.08em;text-transform:uppercase">Loopp</span>
+       </div>`;
+
   return `<!doctype html>
 <html>
 <head>
@@ -145,15 +155,12 @@ function wrapHtml(inner, title = "Loopp") {
   <title>${escapeHtml(title)}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
 </head>
-<body style="margin:0;background:#f7f7f8;padding:24px">
+<body style="margin:0;background:${BG};padding:24px">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;margin:0 auto;background:#fff;border:1px solid ${BORDER};border-radius:12px;overflow:hidden">
     <tr>
-      <td style="padding:24px 24px 8px 24px;background:#fff">
-        <div style="font-family:Inter,Arial,sans-serif;font-size:14px;line-height:1.6;color:#111">
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-            <div style="width:10px;height:10px;border-radius:999px;background:${ACCENT}"></div>
-            <span style="font-weight:600;color:${MUTED};letter-spacing:.08em;text-transform:uppercase">Loopp</span>
-          </div>
+      <td style="padding:24px;background:#fff">
+        <div style="font-family:Inter,Arial,sans-serif;font-size:14px;line-height:1.6;color:${TEXT}">
+          ${headerImg}
           ${inner}
           <hr style="border:none;border-top:1px solid ${BORDER};margin:24px 0">
           <p style="margin:0;color:${MUTED};font-size:12px">
@@ -167,23 +174,10 @@ function wrapHtml(inner, title = "Loopp") {
 </html>`;
 }
 
-function cta(href, label = "Open") {
-  const url = String(href || "").trim();
-  return url
-    ? `<p style="margin:16px 0 0">
-         <a href="${escapeHtml(url)}" target="_blank" rel="noopener" 
-            style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;
-                   padding:10px 16px;border-radius:10px;font-weight:600">
-           ${escapeHtml(label)}
-         </a>
-       </p>`
-    : "";
-}
-
 function keyval(label, value) {
   return `<tr>
     <td style="padding:8px 12px;border-bottom:1px solid ${BORDER};color:${MUTED};white-space:nowrap">${escapeHtml(label)}</td>
-    <td style="padding:8px 12px;border-bottom:1px solid ${BORDER};color:#111">${escapeHtml(value ?? "—")}</td>
+    <td style="padding:8px 12px;border-bottom:1px solid ${BORDER};color:${TEXT}">${escapeHtml(value ?? "—")}</td>
   </tr>`;
 }
 
@@ -213,18 +207,22 @@ function escapeHtml(s = "") {
 }
 
 /* ============================================================================
- * Link Targets (optional)
+ * Link Targets (only plain links if needed — no buttons)
  * ========================================================================== */
 
-const appUrl     = config?.appUrl || "";                 // e.g., https://loopp.com
+const appUrl     = config?.appUrl || "";
 const chatUrl    = appUrl ? `${appUrl}/chat` : "/chat";
 const adminUrlOf = (id) => (appUrl ? `${appUrl}/admin/projects/${id}` : `/admin/projects/${id}`);
 
+// Headers
+const STAFF_LOGO = "https://angelmap.foundryradar.com/wp-content/uploads/2025/03/cropped-cropped-4.png";
+const CLIENT_GIF = "https://angelmap.foundryradar.com/wp-content/uploads/2025/11/Loop_gif.gif";
+
 /* ============================================================================
- * TEMPLATES: Subjects + HTML
+ * TEMPLATES
  * ========================================================================== */
 
-/** CLIENT → "We received your request" */
+/** CLIENT → New request acknowledgement */
 function clientNewRequestSubject(req) {
   const t = req?.projectTitle || "New project";
   return `We received your request: ${t}`;
@@ -236,42 +234,72 @@ function clientNewRequestHtml(req) {
 
   const inner = `
     <h1 style="margin:0 0 8px 0;font-size:22px;line-height:1.35;color:${BRAND_COLOR}">
-      Thanks ${escapeHtml(name)}, we’ve got your request ✅
+      Thank you for choosing Loopp, ${escapeHtml(name)}.
     </h1>
-    <p style="margin:0 0 12px 0;color:${MUTED}">
-      We’re assigning a Project Manager now. You’ll hear from us shortly in your chat room.
+    <p style="margin:0 0 8px 0;color:${MUTED}">
+      We’ve received your project request and we’re assigning the best Project Manager for you now.
+      Sit back—your PM will join this chat shortly to guide everything step by step so you feel in control at every point.
     </p>
     ${detailsTable(
       keyval("Title", title) +
       keyval("Target date", due) +
       keyval("Request ID", String(req?._id || "—"))
     )}
-    ${cta(chatUrl, "Open Chat")}
-    <p style="margin:16px 0 0;color:${MUTED}">
+    <p style="margin:12px 0 0;color:${MUTED}">
+      While you wait, you can explore more at 
+      <a href="https://angelmap.foundryradar.com/" target="_blank" rel="noopener">https://angelmap.foundryradar.com/</a>.
+    </p>
+    <p style="margin:12px 0 0;color:${MUTED}">
       If you didn’t make this request, please reply to this email.
     </p>
   `;
-  return wrapHtml(inner, "We received your request");
+  return wrapHtmlBW(inner, "We received your request", CLIENT_GIF);
 }
 
-/** SUPER ADMINS → "New request" */
+/** SUPER ADMINS → New request (no PM yet) */
 function adminsNewRequestSubject(req) {
   const t = req?.projectTitle || "Untitled";
   const n = `${req?.firstName || ""} ${req?.lastName || ""}`.trim();
   return `New request: ${t}${n ? ` — ${n}` : ""}`;
 }
-function adminsNewRequestHtml(req) {
+function adminsNewRequestHtml_NoPM(req) {
   const inner = `
     <h1 style="margin:0 0 8px 0;font-size:20px;color:${BRAND_COLOR}">New Project Request</h1>
+    <p style="margin:0 0 8px 0;color:${MUTED}">
+      A new project request has been submitted. No PM has been assigned yet.
+      Please ensure a Project Manager reaches out to the client immediately.
+    </p>
     ${detailsTable(
       keyval("Client", `${req?.firstName || ""} ${req?.lastName || ""} (${req?.email || "n/a"})`) +
       keyval("Title", req?.projectTitle || "Untitled") +
       keyval("Target date", formatDate(req?.completionDate)) +
-      keyval("Request ID", String(req?._id || "—"))
+      keyval("Status", "Pending — PM not assigned") +
+      keyval("Admin", adminUrlOf(req?._id))
     )}
-    ${cta(adminUrlOf(req?._id), "Open in Admin")}
   `;
-  return wrapHtml(inner, "New request");
+  return wrapHtmlBW(inner, "New request", STAFF_LOGO);
+}
+
+/** SUPER ADMINS → PM assigned update */
+function adminsAssignedSubject(req, pmName) {
+  const t = req?.projectTitle || "Project";
+  return `PM assigned: ${t} — ${pmName || "PM"}`;
+}
+function adminsAssignedHtml(req, pmName) {
+  const inner = `
+    <h1 style="margin:0 0 8px 0;font-size:20px;color:${BRAND_COLOR}">PM Assigned</h1>
+    <p style="margin:0 0 8px 0;color:${MUTED}">
+      A Project Manager has been assigned to this project.
+    </p>
+    ${detailsTable(
+      keyval("Project", req?.projectTitle || "Project") +
+      keyval("Client", `${req?.firstName || ""} ${req?.lastName || ""} (${req?.email || "n/a"})`) +
+      keyval("PM", pmName || "PM") +
+      keyval("Status", "In progress — PM assigned") +
+      keyval("Admin", adminUrlOf(req?._id))
+    )}
+  `;
+  return wrapHtmlBW(inner, "PM assigned", STAFF_LOGO);
 }
 
 /** PMs → Broadcast "New client request available" (BCC) */
@@ -283,7 +311,8 @@ function pmsBroadcastHtml(req) {
     <h1 style="margin:0 0 8px 0;font-size:20px;color:${BRAND_COLOR}">New Request Available</h1>
     <p style="margin:0 0 12px 0;color:${MUTED}">
       ${escapeHtml(`${req?.firstName || ""} ${req?.lastName || ""}`.trim())} submitted
-      “${escapeHtml(req?.projectTitle || "Project")}` + `”.
+      “${escapeHtml(req?.projectTitle || "Project")}”.
+      Please check the chat inbox and attend to the client immediately.
     </p>
     ${detailsTable(
       keyval("Client", `${req?.firstName || ""} ${req?.lastName || ""}`.trim()) +
@@ -291,15 +320,37 @@ function pmsBroadcastHtml(req) {
       keyval("Target date", formatDate(req?.completionDate)) +
       keyval("Request ID", String(req?._id || "—"))
     )}
-    ${cta(chatUrl, "Open Chat Inbox")}
-    <p style="margin:16px 0 0;color:${MUTED}">
-      Join the room to assist if you’re available.
+    <p style="margin:12px 0 0;color:${MUTED}">
+      Chat: ${escapeHtml(chatUrl)}
     </p>
   `;
-  return wrapHtml(inner, "New request available");
+  return wrapHtmlBW(inner, "New request available", STAFF_LOGO);
 }
 
-/** CLIENT → "Thank you / Project complete" */
+/** PMs → Inform all PMs that a PM has now been assigned */
+function pmsAssignedSubject(req, pmName) {
+  return `PM assigned: ${req?.projectTitle || "Project"} — ${pmName || "PM"}`;
+}
+function pmsAssignedHtml(req, pmName) {
+  const inner = `
+    <h1 style="margin:0 0 8px 0;font-size:20px;color:${BRAND_COLOR}">PM Assigned</h1>
+    <p style="margin:0 0 12px 0;color:${MUTED}">
+      A PM has been assigned for this project (${escapeHtml(pmName || "PM")}). You can continue collaborating for progress and support as needed.
+    </p>
+    ${detailsTable(
+      keyval("Project", req?.projectTitle || "Project") +
+      keyval("Client", `${req?.firstName || ""} ${req?.lastName || ""}`.trim()) +
+      keyval("Status", "In progress — PM assigned") +
+      keyval("Request ID", String(req?._id || "—"))
+    )}
+    <p style="margin:12px 0 0;color:${MUTED}">
+      Chat: ${escapeHtml(chatUrl)}
+    </p>
+  `;
+  return wrapHtmlBW(inner, "PM assigned", STAFF_LOGO);
+}
+
+/** CLIENT → Thank-you on complete */
 function clientThankYouSubject() {
   return "Thanks! Your project is complete";
 }
@@ -309,14 +360,13 @@ function clientThankYouHtml(req) {
     <h1 style="margin:0 0 8px 0;font-size:22px;color:${BRAND_COLOR}">Project completed 🎉</h1>
     <p style="margin:0 0 12px 0;color:${MUTED}">
       Thanks for working with us. We’ve marked <strong>${escapeHtml(t)}</strong> as complete.
+      Your feedback helps us improve — simply reply to this email with any thoughts.
     </p>
     <p style="margin:0;color:${MUTED}">
-      Your feedback helps us improve. You can reply to this email with any follow-ups,
-      or reopen the chat if you need more work done.
+      You can reopen the chat if you need more work done at any time.
     </p>
-    ${cta(chatUrl, "Go to Chat")}
   `;
-  return wrapHtml(inner, "Project completed");
+  return wrapHtmlBW(inner, "Project completed", CLIENT_GIF);
 }
 
 /* ============================================================================
@@ -332,13 +382,23 @@ export async function emailClientNewRequest(req) {
   });
 }
 
-export async function emailSuperAdminsNewRequest(req, superAdmins = []) {
+export async function emailSuperAdminsNewRequest_NoPM(req, superAdmins = []) {
   const toList = superAdmins.map(a => a?.email).filter(Boolean);
   if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
   return safeSend({
     to: toList,
     subject: adminsNewRequestSubject(req),
-    html: adminsNewRequestHtml(req),
+    html: adminsNewRequestHtml_NoPM(req),
+  });
+}
+
+export async function emailSuperAdminsAssigned(req, pmName, superAdmins = []) {
+  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
+  return safeSend({
+    to: toList,
+    subject: adminsAssignedSubject(req, pmName),
+    html: adminsAssignedHtml(req, pmName),
   });
 }
 
@@ -351,14 +411,36 @@ export async function emailPMsBroadcastNewRequest(req, pmEmails = []) {
   const results = [];
   for (let i = 0; i < list.length; i += CHUNK) {
     const chunk = list.slice(i, i + CHUNK);
-    const to = chunk[0];        // one visible "to"
-    const bcc = chunk.slice(1); // rest in bcc
+    const to = chunk[0];
+    const bcc = chunk.slice(1);
     // eslint-disable-next-line no-await-in-loop
     const r = await safeSend({
       to,
       bcc,
       subject: pmsBroadcastSubject(req),
       html: pmsBroadcastHtml(req),
+    });
+    results.push(r);
+  }
+  return results;
+}
+
+export async function emailPMsOnPmAssigned(req, pmName, pmEmails = []) {
+  const list = pmEmails.filter(Boolean);
+  if (!list.length) return { skipped: true, reason: "no pm emails" };
+
+  const CHUNK = 50;
+  const results = [];
+  for (let i = 0; i < list.length; i += CHUNK) {
+    const chunk = list.slice(i, i + CHUNK);
+    const to = chunk[0];
+    const bcc = chunk.slice(1);
+    // eslint-disable-next-line no-await-in-loop
+    const r = await safeSend({
+      to,
+      bcc,
+      subject: pmsAssignedSubject(req, pmName),
+      html: pmsAssignedHtml(req, pmName),
     });
     results.push(r);
   }
