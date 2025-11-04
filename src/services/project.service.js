@@ -306,13 +306,16 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
   (async () => {
     try {
       const [sas, pmEmails] = await Promise.all([getSuperAdmins(), getPMEmails()]);
-      await Promise.allSettled([
+      const results = await Promise.allSettled([
         emailClientNewRequest(request),
         emailSuperAdminsNewRequest(request, sas || []),
         emailPMsBroadcastNewRequest(request, pmEmails || []),
       ]);
+      console.log("[mail] New project notification results:", results.map(r =>
+        r.status === "fulfilled" ? r.value : r.reason
+      ));
     } catch (e) {
-      console.error("[mail] createProjectRequestAndAssignPM:", e.message);
+      console.error("[mail] createProjectRequestAndAssignPM error:", e);
     }
   })();
 

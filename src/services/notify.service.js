@@ -1,7 +1,7 @@
 import { Notification } from "../models/Notification.js";
 import { User } from "../models/User.js";
 import { getIO } from "../lib/io.js";
-import { sendEmail } from "./mailer.js";
+import { sendMail as sendEmail } from "../lib/mailer.js";
 
 export const links = {
   chat: () => "/chat",

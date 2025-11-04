@@ -87,6 +87,14 @@ app.use(
   })
 );
 
+// console.log("[boot] SMTP flags", {
+//   enabled: config.smtp?.enabled,
+//   host: config.smtp?.host,
+//   port: config.smtp?.port,
+//   user: config.smtp?.user ? "(set)" : "(missing)",
+//   from: config.smtp?.mailFrom,
+// });
+
 // ---------- CORS ----------
 const corsOptions = {
   origin(origin, cb) {
