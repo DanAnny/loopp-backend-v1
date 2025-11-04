@@ -10,7 +10,7 @@ import http from "http";
 import compression, { filter as defaultCompressionFilter } from "compression";
 import helmet from "helmet";
 import { Server as SocketIOServer } from "socket.io";
-import { setIO, roomKey } from "./src/lib/io.js";
+import { setIO, roomKey, saveAndEmitSystemForClients } from "./src/lib/io.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -21,6 +21,7 @@ import routes from "./src/routes/index.js";
 import { ChatRoom } from "./src/models/ChatRoom.js";
 import { Message } from "./src/models/Message.js";
 import { User } from "./src/models/User.js";
+import { ProjectRequest } from "./src/models/ProjectRequest.js";
 import { initGridFS } from "./src/lib/gridfs.js";
 import * as projectService from "./src/services/project.service.js";
 import { ONLINE_WINDOW_MS } from "./src/services/pm-selection.service.js";
@@ -267,6 +268,9 @@ const lastSeenActive = new Map();
 const userSockets = new Map();
 const socketOwners = new Map();
 
+// 🔁 polite auto-reply throttle: roomId -> timestamp
+const lastAutoReplyAt = new Map();
+
 async function markUserActive(userId) {
   if (!userId) return;
   const now = Date.now();
@@ -404,6 +408,7 @@ io.on("connection", (socket) => {
     } catch {}
   });
 
+  // ⬇️ Enhanced message handler: polite auto-reply if no PM yet
   socket.on("message", async ({ roomId, userId: uid, text = "", attachments = [] }) => {
     try {
       const room = await ChatRoom.findById(roomId).lean();
@@ -431,6 +436,25 @@ io.on("connection", (socket) => {
         attachments,
         createdAt: msg.createdAt,
       });
+
+      // 2️⃣ If this is a CLIENT message and no PM is assigned yet → polite auto-reply (throttled per room)
+      const isClient = /client/i.test(u?.role || "");
+      if (isClient) {
+        const req = await ProjectRequest.findOne({ chatRoom: roomId }).select("pmAssigned").lean();
+        if (!req?.pmAssigned) {
+          const now = Date.now();
+          const last = lastAutoReplyAt.get(String(roomId)) || 0;
+          if (now - last >= 30_000) { // 30s between auto-replies per room
+            await saveAndEmitSystemForClients({
+              roomId: String(roomId),
+              kind: "auto_reply_waiting",
+              text:
+                "Please hold on — all our PMs are currently assisting other clients. You’re in the right place and we’ll connect you with a PM shortly. Thanks for your patience!",
+            });
+            lastAutoReplyAt.set(String(roomId), now);
+          }
+        }
+      }
     } catch (e) {
       socket.emit("error", e.message);
     }

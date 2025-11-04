@@ -33,11 +33,8 @@ async function startStandbyFollowups(roomId, requestId) {
 
   const intervals = [30_000, 40_000]; // 30s, 40s after that, then every 60s later
   let tick = 0;
-  let stopped = false;
 
   const loop = async () => {
-    if (stopped) return;
-
     const req = await ProjectRequest.findById(requestId).select("pmAssigned").lean();
     if (!req || req.pmAssigned) return; // stop once assigned
 
@@ -126,18 +123,21 @@ async function finalizePmAssignment({ request, room, pm }) {
   await ChatRoom.updateOne({ _id: room._id }, { $set: { pm: pm._id } });
 
   // small helper to yield a micro-tick to the event loop
-  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
   try {
     const pmUser = await User.findById(pm._id).lean();
     const pmName = [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
 
     // 1) Persist + emit the CLIENT-ONLY system bubble first
-    await saveAndEmitSystemForClients({
+    const assignedBubble = await saveAndEmitSystemForClients({
       roomId: room._id.toString(),
       kind: "pm_assigned",
       text: `${pmName} has been assigned as your PM. They’ll join shortly.`,
     });
+
+    // Give the socket a brief head start to render the system bubble first
+    await tick(50);
 
     // 2) Immediately inform the room (used by clients to show the inline banner)
     getIO()?.to(room._id.toString()).emit("room:pm_assigned", {
@@ -152,13 +152,13 @@ async function finalizePmAssignment({ request, room, pm }) {
       at: new Date().toISOString(),
     });
 
-    // Give the socket a micro-tick so the above always lands before any welcome message
-    await tick();
-
     // 3) Upsert the PM welcome (idempotent); emit only if newly inserted
     const welcomeText =
       `Hi! I’m ${pmName}. I’ll coordinate this project and keep you updated here. ` +
       `Please share requirements, files, or questions anytime — we’ll get rolling.`;
+
+    // Ensure welcome message sorts AFTER the assigned system bubble in UIs that sort by createdAt.
+    const welcomeCreatedAt = new Date(Date.now() + 250);
 
     const upsert = await Message.findOneAndUpdate(
       { room: room._id, kind: "pm_welcome" },
@@ -170,6 +170,8 @@ async function finalizePmAssignment({ request, room, pm }) {
           text: welcomeText,
           attachments: [],
           kind: "pm_welcome",
+          createdAt: welcomeCreatedAt,
+          updatedAt: welcomeCreatedAt,
         },
       },
       { upsert: true, new: true, rawResult: true }
