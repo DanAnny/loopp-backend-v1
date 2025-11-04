@@ -3,57 +3,100 @@ import nodemailer from "nodemailer";
 import { config } from "../config/env.js";
 
 /* ============================================================================
- * SMTP / Transport
+ * SMTP / Transport (with 587→465 fallback + robust timeouts)
  * ========================================================================== */
 
 function normalizeFrom(v) {
-  // Accept "Name <email@domain>" or just "email@domain"
-  if (/<.+>/.test(String(v || ""))) return v;
+  if (/<.+>/.test(String(v || ""))) return v;         // already "Name <mail@x>"
   const email = String(v || "no-reply@localhost").trim();
   return `Loopp AI <${email}>`;
 }
 
 const smtpEnabled = !!config?.smtp?.enabled;
 const smtpHost    = config?.smtp?.host || "smtp-relay.brevo.com";
-const smtpPort    = Number(config?.smtp?.port || 587);
+const forcedPort  = config?.smtp?.port ? Number(config.smtp.port) : null; // allow override
 const smtpUser    = config?.smtp?.user;
 const smtpPass    = config?.smtp?.pass;
 const fromHeader  = normalizeFrom(config?.smtp?.mailFrom);
 
+const BASE_OPTS = {
+  host: smtpHost,
+  auth: { user: smtpUser, pass: smtpPass },
+  // Prefer IPv4 to avoid odd IPv6 routes that can time out on some hosts
+  family: 4,
+  // More generous timeouts for slower greetings
+  connectionTimeout: 20000,
+  greetingTimeout:   15000,
+  socketTimeout:     30000,
+  // TLS policy
+  tls: { minVersion: "TLSv1.2" },
+  // Light pooling
+  pool: true,
+  maxConnections: 5,
+  maxMessages: 100,
+};
+
 let transport = null;
 
-if (smtpEnabled && smtpHost && smtpPort && smtpUser && smtpPass) {
-  transport = nodemailer.createTransport({
-    host: smtpHost,
-    port: smtpPort,
-    secure: String(smtpPort) === "465",   // 465 = TLS, 587 = STARTTLS
-    requireTLS: String(smtpPort) !== "465",
-    auth: { user: smtpUser, pass: smtpPass },
-    tls: { minVersion: "TLSv1.2" },
-    pool: true,
-    maxConnections: 5,
-    maxMessages: 100,
+async function makeTransportTry(port, secure) {
+  const t = nodemailer.createTransport({
+    ...BASE_OPTS,
+    port,
+    secure,                 // 587 => false (STARTTLS), 465 => true (implicit TLS)
+    requireTLS: !secure,    // STARTTLS requires TLS upgrade
   });
+  await t.verify();
+  return t;
+}
 
-  // Verify once on boot
-  transport.verify()
-    .then(() => {
-      console.log("[mailer] ✅ transport ready (Brevo SMTP verified)");
-    })
-    .catch(err => {
-      console.warn("[mailer] ❗ transport verify failed:", err?.message);
-    });
+async function buildTransport() {
+  if (!smtpEnabled || !smtpHost || !smtpUser || !smtpPass) {
+    console.warn("[mailer] (disabled) Set SMTP_ENABLED=true and SMTP_* envs to send email.");
+    return null;
+  }
 
+  // If user forced a port, only try that mode
+  if (forcedPort) {
+    const secure = String(forcedPort) === "465";
+    try {
+      const t = await makeTransportTry(forcedPort, secure);
+      console.log(`[mailer] ✅ SMTP verified on ${forcedPort} (${secure ? "implicit TLS" : "STARTTLS"})`);
+      return t;
+    } catch (e) {
+      console.warn(`[mailer] ❗ verify failed on ${forcedPort}:`, e?.message);
+      return null;
+    }
+  }
+
+  // Default: try 587 (STARTTLS) then 465 (implicit TLS)
+  try {
+    const t587 = await makeTransportTry(587, false);
+    console.log("[mailer] ✅ SMTP verified on 587 (STARTTLS)");
+    return t587;
+  } catch (e587) {
+    console.warn("[mailer] 587 verify failed:", e587?.message);
+    try {
+      const t465 = await makeTransportTry(465, true);
+      console.log("[mailer] ✅ SMTP verified on 465 (implicit TLS)");
+      return t465;
+    } catch (e465) {
+      console.error("[mailer] 465 verify failed:", e465?.message);
+      return null;
+    }
+  }
+}
+
+// build once on import
+(async () => {
+  transport = await buildTransport();
   console.log("[boot] SMTP flags", {
     enabled: smtpEnabled,
     host: smtpHost,
-    port: smtpPort,
+    port: transport ? (transport.options?.port || "(unknown)") : "(none)",
     user: smtpUser ? "(set)" : "(missing)",
     from: fromHeader,
   });
-} else {
-  console.warn("[mailer] (disabled) Set SMTP_ENABLED=true and all SMTP_* envs to send email.");
-}
+})();
 
 /**
  * Safely send mail; logs every attempt.
@@ -89,10 +132,10 @@ async function safeSend({ to, bcc, subject, html, text }) {
  * Shared Template Utilities
  * ========================================================================== */
 
-const BRAND_COLOR = "#111";          // heading color
-const ACCENT      = "#0EA5E9";       // buttons/links
-const MUTED       = "#6b7280";       // muted text
-const BORDER      = "#e5e7eb";       // light border
+const BRAND_COLOR = "#111";
+const ACCENT      = "#0EA5E9";
+const MUTED       = "#6b7280";
+const BORDER      = "#e5e7eb";
 
 function wrapHtml(inner, title = "Loopp") {
   return `<!doctype html>
@@ -173,12 +216,12 @@ function escapeHtml(s = "") {
  * Link Targets (optional)
  * ========================================================================== */
 
-const appUrl     = config?.appUrl || "";           // e.g., https://loopp.com
+const appUrl     = config?.appUrl || "";                 // e.g., https://loopp.com
 const chatUrl    = appUrl ? `${appUrl}/chat` : "/chat";
 const adminUrlOf = (id) => (appUrl ? `${appUrl}/admin/projects/${id}` : `/admin/projects/${id}`);
 
 /* ============================================================================
- * TEMPLATES: Subjects + HTML (full messages)
+ * TEMPLATES: Subjects + HTML
  * ========================================================================== */
 
 /** CLIENT → "We received your request" */
@@ -240,7 +283,7 @@ function pmsBroadcastHtml(req) {
     <h1 style="margin:0 0 8px 0;font-size:20px;color:${BRAND_COLOR}">New Request Available</h1>
     <p style="margin:0 0 12px 0;color:${MUTED}">
       ${escapeHtml(`${req?.firstName || ""} ${req?.lastName || ""}`.trim())} submitted
-      “${escapeHtml(req?.projectTitle || "Project")}”.
+      “${escapeHtml(req?.projectTitle || "Project")}` + `”.
     </p>
     ${detailsTable(
       keyval("Client", `${req?.firstName || ""} ${req?.lastName || ""}`.trim()) +
@@ -280,10 +323,6 @@ function clientThankYouHtml(req) {
  * Public API (named exports)
  * ========================================================================== */
 
-/**
- * Notify the client that their request was received.
- * @param {object} req ProjectRequest doc
- */
 export async function emailClientNewRequest(req) {
   if (!req?.email) return { skipped: true, reason: "no client email" };
   return safeSend({
@@ -293,15 +332,9 @@ export async function emailClientNewRequest(req) {
   });
 }
 
-/**
- * Notify all SuperAdmins (array of users with emails).
- * @param {object} req ProjectRequest doc
- * @param {Array<{email:string,firstName?:string,lastName?:string}>} superAdmins
- */
 export async function emailSuperAdminsNewRequest(req, superAdmins = []) {
   const toList = superAdmins.map(a => a?.email).filter(Boolean);
   if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
-  // Send as a single message (multiple "to") — these are internal recipients.
   return safeSend({
     to: toList,
     subject: adminsNewRequestSubject(req),
@@ -309,22 +342,17 @@ export async function emailSuperAdminsNewRequest(req, superAdmins = []) {
   });
 }
 
-/**
- * Optional broadcast to PMs when a new request arrives (use BCC to avoid reply-all).
- * @param {object} req ProjectRequest doc
- * @param {string[]} pmEmails
- */
 export async function emailPMsBroadcastNewRequest(req, pmEmails = []) {
   const list = pmEmails.filter(Boolean);
   if (!list.length) return { skipped: true, reason: "no pm emails" };
 
-  // To satisfy SMTP providers & avoid huge headers, chunk BCC in groups (e.g., 50).
+  // Chunk BCC in groups of 50 to avoid oversized headers
   const CHUNK = 50;
   const results = [];
   for (let i = 0; i < list.length; i += CHUNK) {
     const chunk = list.slice(i, i + CHUNK);
-    const to = chunk[0];           // one visible "to"
-    const bcc = chunk.slice(1);    // remainder in bcc
+    const to = chunk[0];        // one visible "to"
+    const bcc = chunk.slice(1); // rest in bcc
     // eslint-disable-next-line no-await-in-loop
     const r = await safeSend({
       to,
@@ -337,10 +365,6 @@ export async function emailPMsBroadcastNewRequest(req, pmEmails = []) {
   return results;
 }
 
-/**
- * Thank-you email to the client after the project is completed.
- * @param {object} req ProjectRequest doc
- */
 export async function emailClientThankYou(req) {
   if (!req?.email) return { skipped: true, reason: "no client email" };
   return safeSend({
