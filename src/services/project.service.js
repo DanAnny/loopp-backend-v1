@@ -1,3 +1,4 @@
+// src/services/project.service.js
 import { ProjectRequest } from "../models/ProjectRequest.js";
 import { ChatRoom } from "../models/ChatRoom.js";
 import { User } from "../models/User.js";
@@ -18,6 +19,14 @@ import { createAndEmit, notifySuperAdmins, links } from "./notify.service.js";
 /* NEW: scoped emit + persist for client-only system bubbles */
 import { roomKey, saveAndEmitSystemForClients } from "../lib/io.js";
 
+/* ✉️ NEW: email hooks (Brevo/Nodemailer-backed) */
+import {
+  emailClientNewRequest,
+  emailSuperAdminsNewRequest,
+  emailPMsBroadcastNewRequest,
+  emailClientThankYou,
+} from "./email.service.js";
+
 /* -------------------------------- FOLLOW-UP SCHEDULER -------------------------------- */
 
 async function startStandbyFollowups(roomId, requestId) {
@@ -31,7 +40,8 @@ async function startStandbyFollowups(roomId, requestId) {
     } catch {}
   };
 
-  const intervals = [30_000, 40_000]; // 30s, 40s after that, then every 60s later
+  // ⏱️ EXACT INTERVALS REQUESTED: 30s, 40s, then every 60s
+  const intervals = [30_000, 40_000]; // 30s first, 40s next
   let tick = 0;
 
   const loop = async () => {
@@ -53,7 +63,7 @@ async function startStandbyFollowups(roomId, requestId) {
         "We’re still connecting you to an available Project Manager. Thanks for holding on!",
         "followup_30s"
       );
-      setTimeout(loop, intervals[1]);
+      setTimeout(loop, intervals[1]); // 40s next
     } else if (tick === 2) {
       await send(
         "Almost there — our team is finishing with other clients and will join shortly.",
@@ -130,7 +140,7 @@ async function finalizePmAssignment({ request, room, pm }) {
     const pmName = [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
 
     // 1) Persist + emit the CLIENT-ONLY system bubble first
-    const assignedBubble = await saveAndEmitSystemForClients({
+    await saveAndEmitSystemForClients({
       roomId: room._id.toString(),
       kind: "pm_assigned",
       text: `${pmName} has been assigned as your PM. They’ll join shortly.`,
@@ -157,7 +167,7 @@ async function finalizePmAssignment({ request, room, pm }) {
       `Hi! I’m ${pmName}. I’ll coordinate this project and keep you updated here. ` +
       `Please share requirements, files, or questions anytime — we’ll get rolling.`;
 
-    // Ensure welcome message sorts AFTER the assigned system bubble in UIs that sort by createdAt.
+    // Ensure welcome message sorts AFTER the assigned system bubble
     const welcomeCreatedAt = new Date(Date.now() + 250);
 
     const upsert = await Message.findOneAndUpdate(
@@ -192,7 +202,7 @@ async function finalizePmAssignment({ request, room, pm }) {
           senderName: pmName,
           text: welcomeText,
           attachments: [],
-          createdAt: msgDoc.createdAt, // keep DB timestamp
+          createdAt: msgDoc.createdAt,
         });
     }
   } catch {
@@ -231,6 +241,21 @@ async function finalizePmAssignment({ request, room, pm }) {
       },
     });
   } catch {}
+}
+
+/* ------------------------- utility lookups for email ------------------------- */
+
+async function getSuperAdmins() {
+  return User.find({ role: { $in: ["SuperAdmin", "SUPERADMIN", "ADMIN"] }, email: { $exists: true } })
+    .select("_id email firstName lastName")
+    .lean();
+}
+
+async function getPMEmails() {
+  const pms = await User.find({ role: /pm/i, email: { $exists: true } })
+    .select("email")
+    .lean();
+  return pms.map((p) => p.email).filter(Boolean);
 }
 
 /* ------------------------- main: create request + assign ---------------------------- */
@@ -277,6 +302,20 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
   request.chatRoom = room._id;
   await request.save();
 
+  // ✉️ Send emails (fire-and-forget; don’t block UX)
+  (async () => {
+    try {
+      const [sas, pmEmails] = await Promise.all([getSuperAdmins(), getPMEmails()]);
+      await Promise.allSettled([
+        emailClientNewRequest(request),
+        emailSuperAdminsNewRequest(request, sas || []),
+        emailPMsBroadcastNewRequest(request, pmEmails || []),
+      ]);
+    } catch (e) {
+      console.error("[mail] createProjectRequestAndAssignPM:", e.message);
+    }
+  })();
+
   // Try strict ONLINE assignment now (no offline fallback)
   let pm = await selectAndClaimOnlinePM();
 
@@ -291,7 +330,7 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
     }
   }
 
-  // If no PM online → standby bubble (client-only)
+  // If no PM online → standby bubble (client-only) + follow-ups
   if (!pm) {
     try {
       await saveAndEmitSystemForClients({
@@ -301,7 +340,7 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
         kind: "standby",
       });
 
-      // 🔁 Schedule polite follow-ups
+      // 🔁 Schedule polite follow-ups at 30s, 40s, then every 60s
       startStandbyFollowups(room._id.toString(), request._id.toString());
     } catch {}
   }
@@ -653,6 +692,11 @@ export const closeRoomAndComplete = async (requestId, pmUser, auditMeta = {}) =>
     room: req.chatRoom,
     meta: auditMeta,
   });
+
+  // ✉️ Thank-you email to client (fire-and-forget)
+  (async () => {
+    try { await emailClientThankYou(req); } catch {}
+  })();
 
   try {
     await notifySuperAdmins({
