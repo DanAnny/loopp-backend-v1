@@ -477,10 +477,19 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
   if (!req) throw new Error("Request not found");
   if (!req.pmAssigned?.equals(pmUser._id)) throw new Error("Only assigned PM can set engineer");
 
+  // ---- Resolve client email reliably
+  let clientEmail = (req.email || "").trim();
+  if (!clientEmail && req.clientId) {
+    try {
+      const client = await User.findById(req.clientId).select("email").lean();
+      if (client?.email) clientEmail = client.email.trim();
+    } catch {}
+  }
+
   req.engineerAssigned = engineerId;
   await req.save();
 
-  // 📧 Email the client with a rich, designed template
+  // 📧 Email the client (rich HTML) — single, logged send
   try {
     const [pmDoc, engDoc] = await Promise.all([
       User.findById(req.pmAssigned).lean(),
@@ -488,10 +497,15 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
     ]);
     const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ");
     const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ");
-    // Designed HTML:
-    await emailClientEngineerAssigned(req, engName, pmName);
+
+    if (clientEmail) {
+      const r = await emailClientEngineerAssigned({ ...req.toObject(), email: clientEmail }, engName, pmName);
+      console.log("[mail] EngineerAssigned → client:", { to: clientEmail, r });
+    } else {
+      console.warn("[mail] EngineerAssigned skipped (no client email)", String(req._id));
+    }
   } catch (e) {
-    console.error("[mail] emailClientEngineerAssigned failed:", e?.message);
+    console.error("[mail] EngineerAssigned email error:", e?.message);
   }
 
   // 🔴 Permanent system bubble (client-only): PM assigned an engineer
@@ -528,17 +542,6 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
     });
   } catch {}
 
-  // ✉️ EMAIL (fire-and-forget): Client gets rich “Engineer assigned” email
-  (async () => {
-    try {
-      const pmDoc = await User.findById(pmUser._id).lean();
-      const pmName = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ");
-      await emailClientEngineerAssigned(req, engName || (engDoc?.email ? engDoc.email : "Engineer"), pmName || "PM");
-    } catch (e) {
-      console.warn("[mail] client EngineerAssigned email failed:", e?.message);
-    }
-  })();
-
   return req;
 };
 
@@ -551,27 +554,40 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
   req.__engineerAccepted = true;
   await req.save();
 
-  // 📧 Emails: client + PMs + SuperAdmins (rich templates)
-  (async () => {
+  // ---- Resolve client email reliably
+  let clientEmail = (req.email || "").trim();
+  if (!clientEmail && req.clientId) {
     try {
-      const [pmDoc, engDoc, superAdmins, pmEmails] = await Promise.all([
-        req.pmAssigned ? User.findById(req.pmAssigned).lean() : null,
-        User.findById(engineerUser._id).lean(),
-        getSuperAdmins(),       // you already have this helper above
-        getPMEmails(),          // you already have this helper above
-      ]);
-      const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ") || "";
-      const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ") || "";
+      const client = await User.findById(req.clientId).select("email").lean();
+      if (client?.email) clientEmail = client.email.trim();
+    } catch {}
+  }
 
-      await Promise.allSettled([
-        emailClientEngineerAccepted(req, engName, pmName),             // client (designed)
-        emailPMsEngineerAccepted(req, engName, pmName, pmEmails || []),// PM broadcast (designed)
-        emailSuperAdminsEngineerAccepted(req, engName, pmName, superAdmins || []), // SA (designed)
-      ]);
-    } catch (e) {
-      console.error("[mail] engineerAcceptsTask mail fanout failed:", e?.message);
+  try {
+    const [pmDoc, engDoc, superAdmins, pmEmails] = await Promise.all([
+      req.pmAssigned ? User.findById(req.pmAssigned).lean() : null,
+      User.findById(engineerUser._id).lean(),
+      getSuperAdmins(),
+      getPMEmails(),
+    ]);
+    const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ") || "";
+    const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ") || "Engineer";
+
+    const fanout = [];
+    if (clientEmail) {
+      fanout.push(emailClientEngineerAccepted({ ...req.toObject(), email: clientEmail }, engName, pmName));
+    } else {
+      console.warn("[mail] EngineerAccepted skipped (no client email)", String(req._id));
     }
-  })();
+    fanout.push(
+      emailPMsEngineerAccepted(req, engName, pmName, pmEmails || []),
+      emailSuperAdminsEngineerAccepted(req, engName, pmName, superAdmins || [])
+    );
+    const results = await Promise.allSettled(fanout);
+    console.log("[mail] EngineerAccepted fanout:", results.map(r => r.status === "fulfilled" ? r.value : r.reason));
+  } catch (e) {
+    console.error("[mail] EngineerAccepted email error:", e?.message);
+  }
 
   // 🔴 Permanent system bubble (client-only)
   try {
@@ -611,27 +627,6 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
       meta: { requestId: req._id },
     });
   } catch {}
-
-  // ✉️ EMAILS (fire-and-forget): Client + PMs + SuperAdmins get rich HTML
-  (async () => {
-    try {
-      const [pmDoc, sas, pmEmails] = await Promise.all([
-        req.pmAssigned ? User.findById(req.pmAssigned).lean() : null,
-        getSuperAdmins(),
-        getPMEmails(),
-      ]);
-      const pmName = pmDoc ? [pmDoc.firstName, pmDoc.lastName].filter(Boolean).join(" ") : "";
-      const engName = [engineerUser?.firstName, engineerUser?.lastName].filter(Boolean).join(" ") || "Engineer";
-
-      await Promise.allSettled([
-        emailClientEngineerAccepted(req, engName, pmName || ""),
-        emailPMsEngineerAccepted(req, engName, pmName || "", pmEmails || []),
-        emailSuperAdminsEngineerAccepted(req, engName, pmName || "", sas || []),
-      ]);
-    } catch (e) {
-      console.warn("[mail] engineerAccepted email flow failed:", e?.message);
-    }
-  })();
 
   return req;
 };
