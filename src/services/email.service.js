@@ -438,6 +438,37 @@ function clientThankYouHtml(req, pmName, engineerName) {
   return wrapHtml(inner, "Project completed", CLIENT_GIF);
 }
 
+/* ===== Client: Engineer assigned (before acceptance) ===== */
+function clientEngineerAssignedSubject(req, engineerName) {
+  return `Engineer assigned to ${req?.projectTitle || "your project"}`;
+}
+function clientEngineerAssignedHtml(req, engineerName, pmName) {
+  const inner = `
+    <h1 style="margin:0 0 10px 0;font-size:26px;color:${TEXT}">We’ve assigned your engineer</h1>
+    <p style="margin:0 0 10px 0;color:${MUTED}">
+      We’ve assigned <strong>${escapeHtml(engineerName || "your engineer")}</strong> to your project${
+        pmName ? `, coordinated by <strong>${escapeHtml(pmName)}</strong>` : ""
+      }. They’ll confirm and join the chat shortly.
+    </p>
+    ${detailsTable(
+      keyval("Project", req?.projectTitle || "Project") +
+      keyval("Project Manager", pmName || "") +
+      keyval("Engineer", engineerName || "")
+    )}
+    ${button("Open Chat", chatUrl)}
+  `;
+  return wrapHtml(inner, "Engineer assigned", CLIENT_GIF);
+}
+
+export async function emailClientEngineerAssigned(req, engineerName, pmName) {
+  if (!req?.email) return { skipped: true, reason: "no client email" };
+  return safeSend({
+    to: req.email,
+    subject: clientEngineerAssignedSubject(req, engineerName),
+    html: clientEngineerAssignedHtml(req, engineerName, pmName),
+  });
+}
+
 /* ===== Engineer Accepted (client / PMs / super-admins) ===== */
 
 function clientEngineerAcceptedSubject(req, engineerName) {

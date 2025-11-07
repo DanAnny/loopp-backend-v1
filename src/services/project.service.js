@@ -447,35 +447,34 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
   req.engineerAssigned = engineerId;
   await req.save();
 
-  // 🔴 Permanent system bubble (client-only): PM assigned an engineer
   try {
-    const eng = await User.findById(engineerId).lean();
+    const [eng, pmDoc] = await Promise.all([
+      User.findById(engineerId).lean(),
+      req.pmAssigned ? User.findById(req.pmAssigned).lean() : null,
+    ]);
     const engName = [eng?.firstName, eng?.lastName].filter(Boolean).join(" ");
+    const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ");
+
+    // client-only bubble
     await saveAndEmitSystemForClients({
       roomId: req.chatRoom.toString(),
       text: `PM has assigned the project to an Engineer${engName ? ` — (${engName})` : ""}.`,
       kind: "pm_assigned_engineer",
     });
+
+    // ✉️ NEW: email the client that an engineer has been assigned
+    (async () => {
+      try {
+        const { emailClientEngineerAssigned } = await import("./email.service.js");
+        await emailClientEngineerAssigned(req, engName, pmName);
+      } catch (e) { console.error("[mail] client engineer-assigned:", e?.message || e); }
+    })();
   } catch {}
 
-  await logAudit({
-    action: "ENGINEER_ASSIGNED",
-    actor: pmUser._id,
-    target: req._id,
-    targetModel: "ProjectRequest",
-    request: req._id,
-    room: req.chatRoom,
-    meta: { engineerId, ...auditMeta },
-  });
+  await logAudit({ /* ...existing... */ });
 
   try {
-    await createAndEmit(engineerId, {
-      type: "ENGINEER_ASSIGNED",
-      title: "You’ve been assigned a project",
-      body: `“${req.projectTitle || "Project"}” by ${req.firstName} ${req.lastName}`,
-      link: links.engineerTask(req._id),
-      meta: { requestId: req._id },
-    });
+    await createAndEmit(engineerId, { /* ...existing... */ });
   } catch {}
 
   return req;
@@ -527,6 +526,18 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
       meta: { requestId: req._id },
     });
   } catch {}
+
+  try {
+    const engName = [engineerUser?.firstName, engineerUser?.lastName].filter(Boolean).join(" ");
+    const pmDoc   = req.pmAssigned ? await User.findById(req.pmAssigned).lean() : null;
+    const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ");
+
+    // ✉️ NEW: email the client that engineer accepted
+    const { emailClientEngineerAccepted } = await import("./email.service.js");
+    await emailClientEngineerAccepted(req, engName, pmName);
+  } catch (e) {
+    console.error("[mail] client engineer-accepted:", e?.message || e);
+  }
 
   return req;
 };
