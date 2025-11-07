@@ -3,7 +3,7 @@ import nodemailer from "nodemailer";
 import { config } from "../config/env.js";
 
 /* ============================================================================
- * SMTP / Transport (with 587→465 fallback + robust timeouts)
+ * SMTP / Transport (587→465 fallback, pooled, robust timeouts)
  * ========================================================================== */
 
 function normalizeFrom(v) {
@@ -38,7 +38,7 @@ async function makeTransportTry(port, secure) {
   const t = nodemailer.createTransport({
     ...BASE_OPTS,
     port,
-    secure,                 // 587 => false (STARTTLS), 465 => true (implicit TLS)
+    secure,                     // 587 => false (STARTTLS), 465 => true (implicit TLS)
     requireTLS: !secure,
   });
   await t.verify();
@@ -93,8 +93,7 @@ async function buildTransport() {
 })();
 
 /**
- * Safely send mail; logs every attempt.
- * @param {{to:string|string[], bcc?:string|string[], subject:string, html?:string, text?:string}} param0
+ * Safe send with HTML (and text fallback). Logs every attempt.
  * @returns {Promise<{queued:boolean, messageId?:string, disabled?:boolean, error?:string}>}
  */
 async function safeSend({ to, bcc, subject, html, text }) {
@@ -123,18 +122,17 @@ async function safeSend({ to, bcc, subject, html, text }) {
 }
 
 /* ============================================================================
- * Dark Theme Template Utilities (buttons + sections)
+ * Theme (Dark) + Components
  * ========================================================================== */
 
-const BORDER = "#2a2a2a";
+const BORDER  = "#2a2a2a";
 const BG_PAGE = "#0b0b0b";
 const CARD_BG = "#111";
 const TEXT    = "#f5f5f5";
 const MUTED   = "#d1d5db";
 
-/** Black pill button (inline-safe) */
 function button(label, href) {
-  const safeHref = escapeHtml(href || "#");
+  const safeHref  = escapeHtml(href || "#");
   const safeLabel = escapeHtml(label || "Open");
   return `
     <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:14px 0 0 0">
@@ -151,10 +149,9 @@ function button(label, href) {
   `;
 }
 
-/** 2-line section title + paragraph + CTA button (like your screenshot) */
 function ctaBlock(heading, text, ctaLabel, ctaHref) {
   return `
-    <h3 style="margin:20px 0 6px 0;font-size:16px;line-height:1.35;color:${TEXT}">${escapeHtml(heading)}</h3>
+    <h3 style="margin:22px 0 6px 0;font-size:16px;line-height:1.35;color:${TEXT}">${escapeHtml(heading)}</h3>
     <p style="margin:0 0 10px 0;color:${MUTED}">
       ${escapeHtml(text)}
     </p>
@@ -162,11 +159,6 @@ function ctaBlock(heading, text, ctaLabel, ctaHref) {
   `;
 }
 
-/**
- * Wrap body with dark card & optional header image.
- * - Client GIF renders full width (hero).
- * - Staff logo stays compact.
- */
 function wrapHtml(inner, title = "Loopp", headerImgUrl = null) {
   let headerImg = "";
   if (headerImgUrl) {
@@ -234,19 +226,56 @@ function escapeHtml(s = "") {
  * Links & Headers
  * ========================================================================== */
 
-const appUrl       = config?.appUrl || "";
-const chatUrl      = appUrl ? `${appUrl}/chat` : "/chat";
-const HIRE_URL     = "https://loopp.com/hire-an-engineer/";
-const PARTNER_URL  = "https://loopp.com/become-a-partner/";
+const appUrl      = config?.appUrl || "";
+const chatUrl     = appUrl ? `${appUrl}/chat` : "/chat";
+const HIRE_URL    = "https://loopp.com/hire-an-engineer/";
+const PARTNER_URL = "https://loopp.com/become-a-partner/";
 
 const STAFF_LOGO = "https://angelmap.foundryradar.com/wp-content/uploads/2025/03/cropped-cropped-4.png";
 const CLIENT_GIF = "https://angelmap.foundryradar.com/wp-content/uploads/2025/11/Loop_gif.gif";
 
 /* ============================================================================
+ * Helpers (lists / stars / batching)
+ * ========================================================================== */
+
+function uniqueEmails(arr = []) {
+  const set = new Set();
+  for (const e of arr) {
+    const v = String(e || "").trim().toLowerCase();
+    if (v) set.add(v);
+  }
+  return Array.from(set);
+}
+
+async function sendToListInBatches({ list = [], subject, html }) {
+  const emails = uniqueEmails(list);
+  if (!emails.length) return { skipped: true, reason: "empty list" };
+
+  const CHUNK = 50;
+  const results = [];
+  for (let i = 0; i < emails.length; i += CHUNK) {
+    const chunk = emails.slice(i, i + CHUNK);
+    const to  = chunk[0];
+    const bcc = chunk.slice(1);
+    // eslint-disable-next-line no-await-in-loop
+    const r = await safeSend({ to, bcc, subject, html });
+    results.push(r);
+  }
+  return results;
+}
+
+function renderStars(n = 0) {
+  const clamped = Math.max(0, Math.min(5, Number(n) || 0));
+  const full = "★".repeat(clamped);
+  const empty = "☆".repeat(5 - clamped);
+  return `${full}${empty} (${clamped}/5)`;
+}
+
+/* ============================================================================
  * EMAIL TEMPLATES
  * ========================================================================== */
 
-/** CLIENT → New request acknowledgement (matches your screenshot layout) */
+/** CLIENT → New request acknowledgement */
 function clientNewRequestSubject(req) {
   const t = req?.projectTitle || "New project";
   return `We received your request: ${t}`;
@@ -295,7 +324,7 @@ function clientNewRequestHtml(req, pmName, engineerName) {
   return wrapHtml(inner, "We received your request", CLIENT_GIF);
 }
 
-/** SUPER ADMINS → New request (no PM yet) */
+/** SUPER-ADMINS → New request (no PM yet) */
 function adminsNewRequestSubject(req) {
   const t = req?.projectTitle || "Untitled";
   const n = `${req?.firstName || ""} ${req?.lastName || ""}`.trim();
@@ -317,7 +346,7 @@ function adminsNewRequestHtml_NoPM(req, pmName, engineerName) {
   return wrapHtml(inner, "New request", STAFF_LOGO);
 }
 
-/** SUPER ADMINS → PM assigned update */
+/** SUPER-ADMINS → PM assigned update */
 function adminsAssignedSubject(req, pmName) {
   const t = req?.projectTitle || "Project";
   return `PM assigned: ${t} — ${pmName || "PM"}`;
@@ -338,7 +367,7 @@ function adminsAssignedHtml(req, pmName, engineerName) {
   return wrapHtml(inner, "PM assigned", STAFF_LOGO);
 }
 
-/** PMs → Broadcast "New client request available" (BCC) */
+/** PMs → Broadcast "New client request available" (ALL PMs) */
 function pmsBroadcastSubject(req) {
   return `New client request: ${req?.projectTitle || "Project"}`;
 }
@@ -346,7 +375,7 @@ function pmsBroadcastHtml(req, pmName, engineerName) {
   const inner = `
     <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">New Request Available</h1>
     <p style="margin:0 0 12px 0;color:${MUTED}">
-      <strong>Please log in and take ownership immediately</strong> — a project request is pending ownership.
+      <strong>Please login and take ownership immediately</strong> — a project request is pending for ownership.
     </p>
     ${detailsTable(
       keyval("Client", `${(req?.firstName || "")} ${(req?.lastName || "")}`.trim()) +
@@ -359,7 +388,7 @@ function pmsBroadcastHtml(req, pmName, engineerName) {
   return wrapHtml(inner, "New request available", STAFF_LOGO);
 }
 
-/** PMs → Inform all PMs that a PM has now been assigned */
+/** PMs → Notify ALL PMs that a PM has been assigned (EXCLUDES the assigned PM) */
 function pmsAssignedSubject(req, pmName) {
   return `PM assigned: ${req?.projectTitle || "Project"} — ${pmName || "PM"}`;
 }
@@ -367,7 +396,8 @@ function pmsAssignedHtml(req, pmName, engineerName) {
   const inner = `
     <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">PM Assigned</h1>
     <p style="margin:0 0 12px 0;color:${MUTED}">
-      PM is confirmed. Align with the team on scope, milestones, and communication cadence in the chat.
+      ${escapeHtml(pmName || "A PM")} is leading this request. Please stay on standby for the next incoming project.
+      Your quick support keeps delivery smooth — thanks for coordinating and covering each other.
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
@@ -408,9 +438,7 @@ function clientThankYouHtml(req, pmName, engineerName) {
   return wrapHtml(inner, "Project completed", CLIENT_GIF);
 }
 
-/* ============================================================================
- * Engineer Accepted (client / PMs / super-admins)
- * ========================================================================== */
+/* ===== Engineer Accepted (client / PMs / super-admins) ===== */
 
 function clientEngineerAcceptedSubject(req, engineerName) {
   const t = req?.projectTitle || "your project";
@@ -472,9 +500,7 @@ function adminsEngineerAcceptedHtml(req, engineerName, pmName) {
   return wrapHtml(inner, "Engineer accepted", STAFF_LOGO);
 }
 
-/* ============================================================================
- * Engineer in the Room (joined chat) — client / PMs / super-admins
- * ========================================================================== */
+/* ===== Engineer Joined Room (client / PMs / super-admins) ===== */
 
 function clientEngineerInRoomSubject(req, engineerName) {
   return `${engineerName || "Your engineer"} just joined the chat`;
@@ -537,9 +563,198 @@ function adminsEngineerInRoomHtml(req, engineerName, pmName) {
   return wrapHtml(inner, "Engineer joined", STAFF_LOGO);
 }
 
+/* ===== NEW: Client rated project (NOTIFY ASSIGNED PM ONLY) ===== */
+
+function pmClientRatedSubject(req, rating) {
+  const stars = rating?.stars != null ? Number(rating.stars) : null;
+  const starTxt = stars != null ? ` (${stars}/5)` : "";
+  return `Client rated your project${starTxt}: ${req?.projectTitle || "Project"}`;
+}
+function pmClientRatedHtml(req, rating = {}, pmName, engineerName) {
+  const inner = `
+    <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">Client Rating Received</h1>
+    <p style="margin:0 0 10px 0;color:${MUTED}">
+      The client has submitted a rating for this project. Please review their feedback and close the room if everything looks good.
+    </p>
+    ${detailsTable(
+      keyval("Project", req?.projectTitle || "Project") +
+      keyval("Client", `${(req?.firstName || "")} ${(req?.lastName || "")}`.trim()) +
+      keyval("Engineer", engineerName || "") +
+      keyval("Rating", renderStars(rating?.stars))
+    )}
+    ${rating?.comment ? `<p style="margin:12px 0 0;color:${MUTED}"><strong>Comment:</strong> ${escapeHtml(rating.comment)}</p>` : ""}
+    ${button("Open Chat", chatUrl)}
+  `;
+  return wrapHtml(inner, "Client rating", STAFF_LOGO);
+}
+
+/* ===== NEW: Client requested room reopen ===== */
+
+function pmClientReopenSubject(req) {
+  return `Reopen requested: ${req?.projectTitle || "Project"} — action needed`;
+}
+function pmClientReopenHtml(req, pmName, engineerName) {
+  const inner = `
+    <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">Client Requested Re-open</h1>
+    <p style="margin:0 0 10px 0;color:${MUTED}">
+      The client asked to re-open this room. Please review context, confirm scope of the follow-up, and set the next milestone.
+    </p>
+    ${detailsTable(
+      keyval("Project", req?.projectTitle || "Project") +
+      keyval("Client", `${(req?.firstName || "")} ${(req?.lastName || "")}`.trim()) +
+      keyval("Engineer", engineerName || "") +
+      keyval("Status", "Awaiting PM response")
+    )}
+    ${button("Open Chat", chatUrl)}
+  `;
+  return wrapHtml(inner, "Reopen requested", STAFF_LOGO);
+}
+
+function adminsClientReopenSubject(req) {
+  return `Client requested reopen: ${req?.projectTitle || "Project"}`;
+}
+function adminsClientReopenHtml(req, pmName, engineerName) {
+  const inner = `
+    <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">Room Re-open Requested</h1>
+    <p style="margin:0 0 10px 0;color:${MUTED}">
+      Client requested to re-open this room. Ensure PM coordination and billing rules are followed if scope extends.
+    </p>
+    ${detailsTable(
+      keyval("Project", req?.projectTitle || "Project") +
+      keyval("Client", `${(req?.firstName || "")} ${(req?.lastName || "")}`.trim()) +
+      keyval("Project Manager", pmName || "PM") +
+      keyval("Engineer", engineerName || "") +
+      keyval("Status", "Re-open requested by client")
+    )}
+    ${button("Open Chat", chatUrl)}
+  `;
+  return wrapHtml(inner, "Reopen requested", STAFF_LOGO);
+}
+
 /* ============================================================================
- * Staff → Project completed (PMs / engineers / super-admins)
+ * Public API (who gets which message)
  * ========================================================================== */
+
+// Client — new request
+export async function emailClientNewRequest(req, pmName, engineerName) {
+  if (!req?.email) return { skipped: true, reason: "no client email" };
+  return safeSend({
+    to: req.email,
+    subject: clientNewRequestSubject(req),
+    html: clientNewRequestHtml(req, pmName, engineerName),
+  });
+}
+
+// Super-admins — new request (no PM yet)
+export async function emailSuperAdminsNewRequest_NoPM(req, superAdmins = [], pmName, engineerName) {
+  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
+  return safeSend({
+    to: toList,
+    subject: adminsNewRequestSubject(req),
+    html: adminsNewRequestHtml_NoPM(req, pmName, engineerName),
+  });
+}
+
+// Super-admins — PM assigned
+export async function emailSuperAdminsAssigned(req, pmName, superAdmins = [], engineerName) {
+  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
+  return safeSend({
+    to: toList,
+    subject: adminsAssignedSubject(req, pmName),
+    html: adminsAssignedHtml(req, pmName, engineerName),
+  });
+}
+
+// PMs — broadcast new request (ALL PMs)
+export async function emailPMsBroadcastNewRequest(req, pmEmails = [], pmName, engineerName) {
+  return sendToListInBatches({
+    list: pmEmails,
+    subject: pmsBroadcastSubject(req),
+    html: pmsBroadcastHtml(req, pmName, engineerName),
+  });
+}
+
+// PMs — notify ALL PMs that a PM has been assigned (EXCLUDE the assigned PM)
+export async function emailPMsOnPmAssigned(req, pmName, pmEmails = [], engineerName, assignedPmEmail) {
+  const trimmed = uniqueEmails(pmEmails).filter(e => e !== String(assignedPmEmail || "").trim().toLowerCase());
+  return sendToListInBatches({
+    list: trimmed,
+    subject: pmsAssignedSubject(req, pmName),
+    html: pmsAssignedHtml(req, pmName, engineerName),
+  });
+}
+
+// Client — thank you on complete
+export async function emailClientThankYou(req, pmName, engineerName) {
+  if (!req?.email) return { skipped: true, reason: "no client email" };
+  return safeSend({
+    to: req.email,
+    subject: clientThankYouSubject(),
+    html: clientThankYouHtml(req, pmName, engineerName),
+  });
+}
+
+/* -------- Engineer Accepted -------- */
+
+export async function emailClientEngineerAccepted(req, engineerName, pmName) {
+  if (!req?.email) return { skipped: true, reason: "no client email" };
+  return safeSend({
+    to: req.email,
+    subject: clientEngineerAcceptedSubject(req, engineerName),
+    html: clientEngineerAcceptedHtml(req, engineerName, pmName),
+  });
+}
+
+export async function emailPMsEngineerAccepted(req, engineerName, pmName, pmEmails = []) {
+  return sendToListInBatches({
+    list: pmEmails,
+    subject: pmsEngineerAcceptedSubject(req, engineerName),
+    html: pmsEngineerAcceptedHtml(req, engineerName, pmName),
+  });
+}
+
+export async function emailSuperAdminsEngineerAccepted(req, engineerName, pmName, superAdmins = []) {
+  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
+  return safeSend({
+    to: toList,
+    subject: adminsEngineerAcceptedSubject(req, engineerName),
+    html: adminsEngineerAcceptedHtml(req, engineerName, pmName),
+  });
+}
+
+/* -------- Engineer in the Room -------- */
+
+export async function emailClientEngineerInRoom(req, engineerName, pmName) {
+  if (!req?.email) return { skipped: true, reason: "no client email" };
+  return safeSend({
+    to: req.email,
+    subject: clientEngineerInRoomSubject(req, engineerName),
+    html: clientEngineerInRoomHtml(req, engineerName, pmName),
+  });
+}
+
+export async function emailPMsEngineerInRoom(req, engineerName, pmName, pmEmails = []) {
+  return sendToListInBatches({
+    list: pmEmails,
+    subject: pmsEngineerInRoomSubject(req, engineerName),
+    html: pmsEngineerInRoomHtml(req, engineerName, pmName),
+  });
+}
+
+export async function emailSuperAdminsEngineerInRoom(req, engineerName, pmName, superAdmins = []) {
+  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
+  return safeSend({
+    to: toList,
+    subject: adminsEngineerInRoomSubject(req, engineerName),
+    html: adminsEngineerInRoomHtml(req, engineerName, pmName),
+  });
+}
+
+/* -------- Staffs → Project completed -------- */
 
 function staffProjectCompletedSubject(req) {
   return `Completed: ${req?.projectTitle || "Project"}`;
@@ -567,198 +782,43 @@ function staffProjectCompletedHtml(req, pmName, engineerName) {
   return wrapHtml(inner, "Project completed", STAFF_LOGO);
 }
 
-/* ============================================================================
- * Public API
- * ========================================================================== */
-
-export async function emailClientNewRequest(req, pmName, engineerName) {
-  if (!req?.email) return { skipped: true, reason: "no client email" };
-  return safeSend({
-    to: req.email,
-    subject: clientNewRequestSubject(req),
-    html: clientNewRequestHtml(req, pmName, engineerName),
-  });
-}
-
-export async function emailSuperAdminsNewRequest_NoPM(req, superAdmins = [], pmName, engineerName) {
-  const toList = superAdmins.map(a => a?.email).filter(Boolean);
-  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
-  return safeSend({
-    to: toList,
-    subject: adminsNewRequestSubject(req),
-    html: adminsNewRequestHtml_NoPM(req, pmName, engineerName),
-  });
-}
-
-export async function emailSuperAdminsAssigned(req, pmName, superAdmins = [], engineerName) {
-  const toList = superAdmins.map(a => a?.email).filter(Boolean);
-  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
-  return safeSend({
-    to: toList,
-    subject: adminsAssignedSubject(req, pmName),
-    html: adminsAssignedHtml(req, pmName, engineerName),
-  });
-}
-
-export async function emailPMsBroadcastNewRequest(req, pmEmails = [], pmName, engineerName) {
-  const list = pmEmails.filter(Boolean);
-  if (!list.length) return { skipped: true, reason: "no pm emails" };
-
-  const CHUNK = 50;
-  const results = [];
-  for (let i = 0; i < list.length; i += CHUNK) {
-    const chunk = list.slice(i, i + CHUNK);
-    const to = chunk[0];
-    const bcc = chunk.slice(1);
-    // eslint-disable-next-line no-await-in-loop
-    const r = await safeSend({
-      to,
-      bcc,
-      subject: pmsBroadcastSubject(req),
-      html: pmsBroadcastHtml(req, pmName, engineerName),
-    });
-    results.push(r);
-  }
-  return results;
-}
-
-export async function emailPMsOnPmAssigned(req, pmName, pmEmails = [], engineerName) {
-  const list = pmEmails.filter(Boolean);
-  if (!list.length) return { skipped: true, reason: "no pm emails" };
-
-  const CHUNK = 50;
-  const results = [];
-  for (let i = 0; i < list.length; i += CHUNK) {
-    const chunk = list.slice(i, i + CHUNK);
-    const to = chunk[0];
-    const bcc = chunk.slice(1);
-    // eslint-disable-next-line no-await-in-loop
-    const r = await safeSend({
-      to,
-      bcc,
-      subject: pmsAssignedSubject(req, pmName),
-      html: pmsAssignedHtml(req, pmName, engineerName),
-    });
-    results.push(r);
-  }
-  return results;
-}
-
-export async function emailClientThankYou(req, pmName, engineerName) {
-  if (!req?.email) return { skipped: true, reason: "no client email" };
-  return safeSend({
-    to: req.email,
-    subject: clientThankYouSubject(),
-    html: clientThankYouHtml(req, pmName, engineerName),
-  });
-}
-
-/* -------- Engineer Accepted -------- */
-
-export async function emailClientEngineerAccepted(req, engineerName, pmName) {
-  if (!req?.email) return { skipped: true, reason: "no client email" };
-  return safeSend({
-    to: req.email,
-    subject: clientEngineerAcceptedSubject(req, engineerName),
-    html: clientEngineerAcceptedHtml(req, engineerName, pmName),
-  });
-}
-
-export async function emailPMsEngineerAccepted(req, engineerName, pmName, pmEmails = []) {
-  const list = pmEmails.filter(Boolean);
-  if (!list.length) return { skipped: true, reason: "no pm emails" };
-
-  const CHUNK = 50;
-  const results = [];
-  for (let i = 0; i < list.length; i += CHUNK) {
-    const chunk = list.slice(i, i + CHUNK);
-    const to = chunk[0];
-    const bcc = chunk.slice(1);
-    // eslint-disable-next-line no-await-in-loop
-    const r = await safeSend({
-      to,
-      bcc,
-      subject: pmsEngineerAcceptedSubject(req, engineerName),
-      html: pmsEngineerAcceptedHtml(req, engineerName, pmName),
-    });
-    results.push(r);
-  }
-  return results;
-}
-
-export async function emailSuperAdminsEngineerAccepted(req, engineerName, pmName, superAdmins = []) {
-  const toList = superAdmins.map(a => a?.email).filter(Boolean);
-  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
-  return safeSend({
-    to: toList,
-    subject: adminsEngineerAcceptedSubject(req, engineerName),
-    html: adminsEngineerAcceptedHtml(req, engineerName, pmName),
-  });
-}
-
-/* -------- Engineer in the Room -------- */
-
-export async function emailClientEngineerInRoom(req, engineerName, pmName) {
-  if (!req?.email) return { skipped: true, reason: "no client email" };
-  return safeSend({
-    to: req.email,
-    subject: clientEngineerInRoomSubject(req, engineerName),
-    html: clientEngineerInRoomHtml(req, engineerName, pmName),
-  });
-}
-
-export async function emailPMsEngineerInRoom(req, engineerName, pmName, pmEmails = []) {
-  const list = pmEmails.filter(Boolean);
-  if (!list.length) return { skipped: true, reason: "no pm emails" };
-
-  const CHUNK = 50;
-  const results = [];
-  for (let i = 0; i < list.length; i += CHUNK) {
-    const chunk = list.slice(i, i + CHUNK);
-    const to = chunk[0];
-    const bcc = chunk.slice(1);
-    // eslint-disable-next-line no-await-in-loop
-    const r = await safeSend({
-      to,
-      bcc,
-      subject: pmsEngineerInRoomSubject(req, engineerName),
-      html: pmsEngineerInRoomHtml(req, engineerName, pmName),
-    });
-    results.push(r);
-  }
-  return results;
-}
-
-export async function emailSuperAdminsEngineerInRoom(req, engineerName, pmName, superAdmins = []) {
-  const toList = superAdmins.map(a => a?.email).filter(Boolean);
-  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
-  return safeSend({
-    to: toList,
-    subject: adminsEngineerInRoomSubject(req, engineerName),
-    html: adminsEngineerInRoomHtml(req, engineerName, pmName),
-  });
-}
-
-/* -------- Staffs → Project completed -------- */
-
 export async function emailStaffsProjectCompleted(req, pmName, engineerName, staffEmails = []) {
-  const list = staffEmails.filter(Boolean);
-  if (!list.length) return { skipped: true, reason: "no staff emails" };
+  return sendToListInBatches({
+    list: staffEmails,
+    subject: staffProjectCompletedSubject(req),
+    html: staffProjectCompletedHtml(req, pmName, engineerName),
+  });
+}
 
-  const CHUNK = 50;
-  const results = [];
-  for (let i = 0; i < list.length; i += CHUNK) {
-    const chunk = list.slice(i, i + CHUNK);
-    const to = chunk[0];
-    const bcc = chunk.slice(1);
-    // eslint-disable-next-line no-await-in-loop
-    const r = await safeSend({
-      to,
-      bcc,
-      subject: staffProjectCompletedSubject(req),
-      html: staffProjectCompletedHtml(req, pmName, engineerName),
-    });
-    results.push(r);
-  }
-  return results;
+/* -------- NEW PUBLIC API: client rating + reopen -------- */
+
+// Assigned PM only — client rated
+export async function emailPMClientRated(req, pmEmail, rating = {}, pmName, engineerName) {
+  if (!pmEmail) return { skipped: true, reason: "no pm email" };
+  return safeSend({
+    to: pmEmail,
+    subject: pmClientRatedSubject(req, rating),
+    html: pmClientRatedHtml(req, rating, pmName, engineerName),
+  });
+}
+
+// Assigned PM only — client requested reopen
+export async function emailPMClientReopenRequested(req, pmEmail, pmName, engineerName) {
+  if (!pmEmail) return { skipped: true, reason: "no pm email" };
+  return safeSend({
+    to: pmEmail,
+    subject: pmClientReopenSubject(req),
+    html: pmClientReopenHtml(req, pmName, engineerName),
+  });
+}
+
+// Super-admins — client requested reopen (cc: leadership)
+export async function emailSuperAdminsClientReopenRequested(req, superAdmins = [], pmName, engineerName) {
+  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+  if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
+  return safeSend({
+    to: toList,
+    subject: adminsClientReopenSubject(req),
+    html: adminsClientReopenHtml(req, pmName, engineerName),
+  });
 }
