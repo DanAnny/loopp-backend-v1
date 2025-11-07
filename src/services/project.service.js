@@ -26,7 +26,7 @@ import {
   emailPMsBroadcastNewRequest,
   emailClientThankYou,
 
-  // NEW: rich templates used to fix the “single-line” mails
+  // Rich, designed templates
   emailClientEngineerAssigned,
   emailClientEngineerAccepted,
   emailPMsEngineerAccepted,
@@ -117,6 +117,23 @@ async function adjustTaskCount(userId, delta, { touchAssignDate = false } = {}) 
 
   await doc.save();
   return doc;
+}
+
+/* ----------------------- helper: resolve client email reliably ----------------------- */
+async function resolveClientEmail(req) {
+  // Prefer the email captured on the request
+  if (req?.email && String(req.email).trim()) return String(req.email).trim();
+
+  // Fallback to linked user if present
+  if (req?.clientId) {
+    try {
+      const u = await User.findById(req.clientId).select("email").lean();
+      if (u?.email && String(u.email).trim()) return String(u.email).trim();
+    } catch {}
+  }
+
+  // Nothing found
+  return null;
 }
 
 /** CAS: claim this request for pmId only if pmAssigned is still empty. */
@@ -272,7 +289,8 @@ async function finalizePmAssignment({ request, room, pm }) {
 /* ------------------------- utility lookups for email ------------------------- */
 
 async function getSuperAdmins() {
-  return User.find({ role: { $in: ["SuperAdmin", "SUPERADMIN", "ADMIN"] }, email: { $exists: true } })
+  // Schema roles are exact-case: "SuperAdmin" | "Admin" | "PM" | "Engineer" | "Client"
+  return User.find({ role: { $in: ["SuperAdmin", "Admin"] }, email: { $exists: true } })
     .select("_id email firstName lastName")
     .lean();
 }
@@ -477,15 +495,7 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
   if (!req) throw new Error("Request not found");
   if (!req.pmAssigned?.equals(pmUser._id)) throw new Error("Only assigned PM can set engineer");
 
-  // ---- Resolve client email reliably
-  let clientEmail = (req.email || "").trim();
-  if (!clientEmail && req.clientId) {
-    try {
-      const client = await User.findById(req.clientId).select("email").lean();
-      if (client?.email) clientEmail = client.email.trim();
-    } catch {}
-  }
-
+  // Persist assignment
   req.engineerAssigned = engineerId;
   await req.save();
 
@@ -497,23 +507,29 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
     ]);
     const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ");
     const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ");
+    const clientEmail = await resolveClientEmail(req);
+
+    console.log("[mail] DEBUG EngineerAssigned recipient:", {
+      requestId: String(req._id),
+      reqEmail: req.email,
+      clientId: req.clientId,
+      clientEmail,
+    });
 
     if (clientEmail) {
       const r = await emailClientEngineerAssigned({ ...req.toObject(), email: clientEmail }, engName, pmName);
       console.log("[mail] EngineerAssigned → client:", { to: clientEmail, r });
     } else {
-      console.warn("[mail] EngineerAssigned skipped (no client email)", String(req._id));
+      console.warn("[mail] EngineerAssigned SKIPPED (no client email)", String(req._id));
     }
   } catch (e) {
     console.error("[mail] EngineerAssigned email error:", e?.message);
   }
 
   // 🔴 Permanent system bubble (client-only): PM assigned an engineer
-  let engDoc = null;
-  let engName = "";
   try {
-    engDoc = await User.findById(engineerId).lean();
-    engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ");
+    const engDoc = await User.findById(engineerId).lean();
+    const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ");
     await saveAndEmitSystemForClients({
       roomId: req.chatRoom.toString(),
       text: `PM has assigned the project to an Engineer${engName ? ` — (${engName})` : ""}.`,
@@ -554,15 +570,7 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
   req.__engineerAccepted = true;
   await req.save();
 
-  // ---- Resolve client email reliably
-  let clientEmail = (req.email || "").trim();
-  if (!clientEmail && req.clientId) {
-    try {
-      const client = await User.findById(req.clientId).select("email").lean();
-      if (client?.email) clientEmail = client.email.trim();
-    } catch {}
-  }
-
+  // 📧 Emails: client + PMs + SuperAdmins (rich templates)
   try {
     const [pmDoc, engDoc, superAdmins, pmEmails] = await Promise.all([
       req.pmAssigned ? User.findById(req.pmAssigned).lean() : null,
@@ -572,19 +580,34 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
     ]);
     const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ") || "";
     const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ") || "Engineer";
+    const clientEmail = await resolveClientEmail(req);
+
+    console.log("[mail] DEBUG EngineerAccepted recipient:", {
+      requestId: String(req._id),
+      reqEmail: req.email,
+      clientId: req.clientId,
+      clientEmail,
+    });
 
     const fanout = [];
     if (clientEmail) {
-      fanout.push(emailClientEngineerAccepted({ ...req.toObject(), email: clientEmail }, engName, pmName));
+      fanout.push(
+        emailClientEngineerAccepted({ ...req.toObject(), email: clientEmail }, engName, pmName)
+      );
     } else {
-      console.warn("[mail] EngineerAccepted skipped (no client email)", String(req._id));
+      console.warn("[mail] EngineerAccepted SKIPPED (no client email)", String(req._id));
     }
+
     fanout.push(
       emailPMsEngineerAccepted(req, engName, pmName, pmEmails || []),
       emailSuperAdminsEngineerAccepted(req, engName, pmName, superAdmins || [])
     );
+
     const results = await Promise.allSettled(fanout);
-    console.log("[mail] EngineerAccepted fanout:", results.map(r => r.status === "fulfilled" ? r.value : r.reason));
+    console.log(
+      "[mail] EngineerAccepted fanout:",
+      results.map((r) => (r.status === "fulfilled" ? r.value : r.reason))
+    );
   } catch (e) {
     console.error("[mail] EngineerAccepted email error:", e?.message);
   }
