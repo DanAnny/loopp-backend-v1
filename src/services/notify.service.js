@@ -2,6 +2,7 @@ import { Notification } from "../models/Notification.js";
 import { User } from "../models/User.js";
 import { getIO } from "../lib/io.js";
 import { sendMail as sendEmail } from "../lib/mailer.js";
+import { emailNotifyUser } from "./email.service.js";
 
 export const links = {
   chat: () => "/chat",
@@ -46,20 +47,9 @@ export async function createAndEmit(userId, payload) {
   // Email mirror
   try {
     const u = await User.findById(userId).lean();
-    if (u?.email) {
+    if (u?.email && !/client/i.test(String(u.role || ""))) {
       const subject = payload.title || "Notification";
-      const linkLine = payload.link ? `<p><a href="${payload.link}" target="_blank">Open</a></p>` : "";
-      const html = `
-        <div style="font-family:Inter,Arial,sans-serif;line-height:1.5">
-          <h3 style="margin:0 0 8px">${subject}</h3>
-          <p>${payload.body || ""}</p>
-          ${linkLine}
-          <hr/>
-          <p style="color:#666;font-size:12px">You’re receiving this because you have a Loopp account.</p>
-        </div>
-      `;
-      const text = `${payload.body || ""}\n${payload.link || ""}`.trim();
-      await sendEmail({ to: u.email, subject, html, text });
+      await emailNotifyUser(u.email, subject, payload.body || "", payload.link || "");
     }
   } catch {}
 

@@ -794,3 +794,17 @@ export async function emailStaffsProjectCompleted(req, pmName, engineerName, sta
   }
   return results;
 }
+
+// Simple, styled notification wrapper used by notify.service.js
+export async function emailNotifyUser(to, subject, body, link) {
+  const inner = `
+    <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">${escapeHtml(subject || "Notification")}</h1>
+    <p style="margin:0 0 12px 0;color:${MUTED}">${escapeHtml(body || "")}</p>
+    ${link ? button("Open", link) : ""}
+  `;
+  return safeSend({
+    to,
+    subject: subject || "Notification",
+    html: wrapHtml(inner, subject || "Notification", STAFF_LOGO),
+  });
+}

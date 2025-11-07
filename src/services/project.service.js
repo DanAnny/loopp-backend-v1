@@ -480,6 +480,20 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
   req.engineerAssigned = engineerId;
   await req.save();
 
+  // 📧 Email the client with a rich, designed template
+  try {
+    const [pmDoc, engDoc] = await Promise.all([
+      User.findById(req.pmAssigned).lean(),
+      User.findById(engineerId).lean(),
+    ]);
+    const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ");
+    const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ");
+    // Designed HTML:
+    await emailClientEngineerAssigned(req, engName, pmName);
+  } catch (e) {
+    console.error("[mail] emailClientEngineerAssigned failed:", e?.message);
+  }
+
   // 🔴 Permanent system bubble (client-only): PM assigned an engineer
   let engDoc = null;
   let engName = "";
@@ -536,6 +550,28 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
   if (req.__engineerAccepted) return req;
   req.__engineerAccepted = true;
   await req.save();
+
+  // 📧 Emails: client + PMs + SuperAdmins (rich templates)
+  (async () => {
+    try {
+      const [pmDoc, engDoc, superAdmins, pmEmails] = await Promise.all([
+        req.pmAssigned ? User.findById(req.pmAssigned).lean() : null,
+        User.findById(engineerUser._id).lean(),
+        getSuperAdmins(),       // you already have this helper above
+        getPMEmails(),          // you already have this helper above
+      ]);
+      const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ") || "";
+      const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ") || "";
+
+      await Promise.allSettled([
+        emailClientEngineerAccepted(req, engName, pmName),             // client (designed)
+        emailPMsEngineerAccepted(req, engName, pmName, pmEmails || []),// PM broadcast (designed)
+        emailSuperAdminsEngineerAccepted(req, engName, pmName, superAdmins || []), // SA (designed)
+      ]);
+    } catch (e) {
+      console.error("[mail] engineerAcceptsTask mail fanout failed:", e?.message);
+    }
+  })();
 
   // 🔴 Permanent system bubble (client-only)
   try {
