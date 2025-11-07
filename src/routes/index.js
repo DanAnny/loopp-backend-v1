@@ -10,11 +10,13 @@ import managementRoutes from "./management.routes.js";
 import notificationRoutes from "./notification.routes.js";
 import integrationsRoutes from "./integrations.routes.js";
 import devmail from "./dev-mail.js";
+import meetingsRoutes from "./meetings.routes.js";
 
 const router = express.Router();
 
 router.use("/auth", authRoutes);
 router.use("/projects", projectRoutes);
+router.use("/meetings", meetingsRoutes);
 router.use("/tasks", taskRoutes);
 router.use("/chat", chatRoutes);
 router.use("/users", usersRoutes);
