@@ -25,14 +25,13 @@ import {
   emailSuperAdminsNewRequest,
   emailPMsBroadcastNewRequest,
   emailClientThankYou,
-
-  // Rich, designed templates
   emailClientEngineerAssigned,
   emailClientEngineerAccepted,
   emailPMsEngineerAccepted,
   emailSuperAdminsEngineerAccepted,
   emailPMsOnPmAssigned,
   emailSuperAdminsAssigned,
+  emailClientPmAssigned,
 } from "./email.service.js";
 
 /* -------------------------------- FOLLOW-UP SCHEDULER -------------------------------- */
@@ -241,6 +240,25 @@ async function finalizePmAssignment({ request, room, pm }) {
         });
     }
   } catch {}
+
+  (async () => {
+    try {
+      const reqLean = await ProjectRequest.findById(request._id)
+        .select("email clientId chatRoom firstName lastName projectTitle pmAssigned engineerAssigned")
+        .lean();
+      const clientEmail = await resolveClientEmailStrong(reqLean);
+      if (clientEmail) {
+        await emailClientPmAssigned({ ...reqLean, email: clientEmail }, pmName);
+        console.log("[mail] PMAssigned → client:", { to: clientEmail });
+      } else {
+        console.warn("[mail] PMAssigned SKIPPED — no client email found", {
+          requestId: String(request._id),
+        });
+      }
+    } catch (e) {
+      console.error("[mail] PMAssigned email error:", e?.message);
+    }
+  })();
 
   try {
     getIO()?.to(`user:${pm._id.toString()}`).emit("pm:request_assigned", {

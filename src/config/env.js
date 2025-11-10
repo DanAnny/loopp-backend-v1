@@ -8,6 +8,7 @@ if (!process.env.MONGODB_URI) {
 }
 
 export const config = {
+  appUrl: process.env.APP_URL || "http://localhost:5173",
   env: process.env.NODE_ENV || "development",
   port: process.env.PORT || 5500,
   mongoURI: process.env.MONGODB_URI,

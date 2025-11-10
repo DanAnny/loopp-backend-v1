@@ -795,6 +795,82 @@ export async function emailStaffsProjectCompleted(req, pmName, engineerName, sta
   return results;
 }
 
+/* ============================================================================
+ * CLIENT → PM assigned
+ * ========================================================================== */
+function clientPmAssignedSubject(req, pmName) {
+  const t = req?.projectTitle || "your project";
+  return `Your Project Manager is assigned: ${pmName || "PM"} — ${t}`;
+}
+function clientPmAssignedHtml(req, pmName) {
+  const inner = `
+    <h1 style="margin:0 0 10px 0;font-size:26px;color:${TEXT}">Your Project Manager is here</h1>
+    <p style="margin:0 0 10px 0;color:${MUTED}">
+      <strong>${escapeHtml(pmName || "Your PM")}</strong> has been assigned to your project and will coordinate delivery and updates in the chat.
+    </p>
+    ${detailsTable(
+      keyval("Project", req?.projectTitle || "Project") +
+      keyval("Project Manager", pmName || "PM")
+    )}
+    ${button("Open Chat", chatUrl)}
+    ${ctaBlock(
+      "What happens next?",
+      "Your PM will confirm scope, align milestones, and set the first deliverable. You can share files and notes in the chat.",
+      "Go to Chat",
+      chatUrl
+    )}
+  `;
+  return wrapHtml(inner, "PM assigned", CLIENT_GIF);
+}
+
+/* ============================================================================
+ * CLIENT → Project submitted & in Review (with /rate instruction)
+ * ========================================================================== */
+function clientProjectSubmittedSubject(req) {
+  const t = req?.projectTitle || "your project";
+  return `Submitted for review: ${t}`;
+}
+function clientProjectSubmittedHtml(req, pmName, engineerName) {
+  const inner = `
+    <h1 style="margin:0 0 10px 0;font-size:26px;color:${TEXT}">Your project is ready for review</h1>
+    <p style="margin:0 0 12px 0;color:${MUTED}">
+      We’ve marked <strong>${escapeHtml(req?.projectTitle || "your project")}</strong> as <strong>Submitted</strong>.
+      ${pmName ? `Your PM <strong>${escapeHtml(pmName)}</strong>` : "Your PM"} will guide the final checks.
+    </p>
+    ${detailsTable(
+      keyval("Project Manager", pmName || "PM") +
+      keyval("Engineer", engineerName || "Engineer") +
+      keyval("Status", "In Review")
+    )}
+    ${button("Open Chat to Review", chatUrl)}
+    <p style="margin:12px 0 0;color:${MUTED}">
+      To rate the team, open the chat and type <code style="background:#222;padding:2px 6px;border-radius:6px">/rate</code> then click <strong>Send</strong>.
+    </p>
+  `;
+  return wrapHtml(inner, "Project in Review", CLIENT_GIF);
+}
+
+/* ============================================================================
+ * PUBLIC API (new exports)
+ * ========================================================================== */
+export async function emailClientPmAssigned(req, pmName) {
+  if (!req?.email) return { skipped: true, reason: "no client email" };
+  return safeSend({
+    to: req.email,
+    subject: clientPmAssignedSubject(req, pmName),
+    html: clientPmAssignedHtml(req, pmName),
+  });
+}
+
+export async function emailClientProjectSubmitted(req, pmName, engineerName) {
+  if (!req?.email) return { skipped: true, reason: "no client email" };
+  return safeSend({
+    to: req.email,
+    subject: clientProjectSubmittedSubject(req),
+    html: clientProjectSubmittedHtml(req, pmName, engineerName),
+  });
+}
+
 // Simple, styled notification wrapper used by notify.service.js
 export async function emailNotifyUser(to, subject, body, link) {
   const inner = `
