@@ -232,8 +232,10 @@ function escapeHtml(s = "") {
  * Links & Headers
  * ========================================================================== */
 
-const appUrl       = config?.appUrl || "";
-const chatUrl      = appUrl ? `${appUrl}/chat` : "/chat";
+/** Hardcoded chat entrypoints as requested */
+const CLIENT_CHAT_URL = "https://loopp-frontend-v1.vercel.app/client-sign-in";
+const STAFF_CHAT_URL  = "https://loopp-frontend-v1.vercel.app/signin";
+
 const HIRE_URL     = "https://loopp.com/hire-an-engineer/";
 const PARTNER_URL  = "https://loopp.com/become-a-partner/";
 
@@ -257,7 +259,7 @@ function clientNewRequestHtml(req, pmName, engineerName) {
     <h1 style="margin:8px 0 10px 0;font-size:28px;line-height:1.25;color:${TEXT};font-weight:800">
       Hire Top-Vetted AI Engineers
     </h1>
-    ${button("Get started with Loopp", chatUrl)}
+    ${button("Get started with Loopp", CLIENT_CHAT_URL)}
 
     <p style="margin:18px 0 0;color:${TEXT};font-weight:700">Hey ${escapeHtml(name)},</p>
     <p style="margin:0 0 10px 0;color:${MUTED}">
@@ -352,7 +354,7 @@ function pmsBroadcastHtml(req, pmName, engineerName) {
       keyval("Project Manager", pmName || "Not assigned yet") +
       keyval("Engineer", engineerName || "Pending")
     )}
-    ${button("Open Chat", chatUrl)}
+    ${button("Open Chat", STAFF_CHAT_URL)}
   `;
   return wrapHtml(inner, "New request available", STAFF_LOGO);
 }
@@ -373,7 +375,7 @@ function pmsAssignedHtml(req, pmName, engineerName) {
       keyval("Project Manager", pmName || "PM") +
       keyval("Engineer", engineerName || "Pending")
     )}
-    ${button("Open Chat", chatUrl)}
+    ${button("Open Chat", STAFF_CHAT_URL)}
   `;
   return wrapHtml(inner, "PM assigned", STAFF_LOGO);
 }
@@ -394,7 +396,7 @@ function clientThankYouHtml(req, pmName, engineerName) {
       keyval("Project Manager", pmName || "PM") +
       keyval("Engineer", engineerName || "Engineer")
     )}
-    ${button("Open Chat", chatUrl)}
+    ${button("Open Chat", CLIENT_CHAT_URL)}
 
     ${ctaBlock(
       "Hire Top-Vetted AI Engineers",
@@ -426,7 +428,7 @@ function clientEngineerAcceptedHtml(req, engineerName, pmName) {
       keyval("Project Manager", pmName || "") +
       keyval("Engineer", engineerName || "")
     )}
-    ${button("Say hello in chat", chatUrl)}
+    ${button("Say hello in chat", CLIENT_CHAT_URL)}
   `;
   return wrapHtml(inner, "Engineer confirmed", CLIENT_GIF);
 }
@@ -446,7 +448,7 @@ function pmsEngineerAcceptedHtml(req, engineerName, pmName) {
       keyval("Project Manager", pmName || "") +
       keyval("Engineer", engineerName || "")
     )}
-    ${button("Open Chat", chatUrl)}
+    ${button("Open Chat", STAFF_CHAT_URL)}
   `;
   return wrapHtml(inner, "Engineer confirmed", STAFF_LOGO);
 }
@@ -491,7 +493,7 @@ function clientEngineerInRoomHtml(req, engineerName, pmName) {
       keyval("Project Manager", pmName || "") +
       keyval("Engineer", engineerName || "")
     )}
-    ${button("Open Chat", chatUrl)}
+    ${button("Open Chat", CLIENT_CHAT_URL)}
   `;
   return wrapHtml(inner, "Engineer joined", CLIENT_GIF);
 }
@@ -511,7 +513,7 @@ function pmsEngineerInRoomHtml(req, engineerName, pmName) {
       keyval("Project Manager", pmName || "") +
       keyval("Engineer", engineerName || "")
     )}
-    ${button("Open Chat", chatUrl)}
+    ${button("Open Chat", STAFF_CHAT_URL)}
   `;
   return wrapHtml(inner, "Engineer joined", STAFF_LOGO);
 }
@@ -548,7 +550,7 @@ function staffProjectCompletedHtml(req, pmName, engineerName) {
     <p style="margin:0 0 10px 0;color:${MUTED}">
       The project has been closed out. Please complete post-delivery steps:
     </p>
-    <ul style="margin:0 0 12px 20px;color:${MUTED};padding:0">
+    <ul style="margin:0 0 12px 0;color:${MUTED};padding:0">
       <li>Archive final deliverables & transfer ownership where applicable</li>
       <li>Remove temporary access tokens, test credentials, and webhooks</li>
       <li>Log time & notes; update billing</li>
@@ -560,7 +562,7 @@ function staffProjectCompletedHtml(req, pmName, engineerName) {
       keyval("Project Manager", pmName || "") +
       keyval("Engineer", engineerName || "")
     )}
-    ${button("Open Chat", chatUrl)}
+    ${button("Open Chat", STAFF_CHAT_URL)}
   `;
   return wrapHtml(inner, "Project completed", STAFF_LOGO);
 }
@@ -585,7 +587,7 @@ function clientEngineerAssignedHtml(req, engineerName, pmName) {
       keyval("Project Manager", pmName || "") +
       keyval("Engineer", engineerName || "")
     )}
-    ${button("Open chat", chatUrl)}
+    ${button("Open chat", CLIENT_CHAT_URL)}
   `;
   return wrapHtml(inner, "Engineer assigned", CLIENT_GIF);
 }
@@ -635,7 +637,7 @@ export async function emailPMsBroadcastNewRequest(req, pmEmails = [], pmName, en
     const chunk = list.slice(i, i + CHUNK);
     const to = chunk[0];
     const bcc = chunk.slice(1);
-    // eslint-disable-next-line no-await-  in-loop
+    // eslint-disable-next-line no-await- in-loop
     const r = await safeSend({
       to,
       bcc,
@@ -812,12 +814,12 @@ function clientPmAssignedHtml(req, pmName) {
       keyval("Project", req?.projectTitle || "Project") +
       keyval("Project Manager", pmName || "PM")
     )}
-    ${button("Open Chat", chatUrl)}
+    ${button("Open Chat", CLIENT_CHAT_URL)}
     ${ctaBlock(
       "What happens next?",
       "Your PM will confirm scope, align milestones, and set the first deliverable. You can share files and notes in the chat.",
       "Go to Chat",
-      chatUrl
+      CLIENT_CHAT_URL
     )}
   `;
   return wrapHtml(inner, "PM assigned", CLIENT_GIF);
@@ -842,7 +844,7 @@ function clientProjectSubmittedHtml(req, pmName, engineerName) {
       keyval("Engineer", engineerName || "Engineer") +
       keyval("Status", "In Review")
     )}
-    ${button("Open Chat to Review", chatUrl)}
+    ${button("Open Chat to Review", CLIENT_CHAT_URL)}
     <p style="margin:12px 0 0;color:${MUTED}">
       To rate the team, open the chat and type <code style="background:#222;padding:2px 6px;border-radius:6px">/rate</code> then click <strong>Send</strong>.
     </p>
@@ -878,6 +880,7 @@ export async function emailNotifyUser(to, subject, body, link) {
     <p style="margin:0 0 12px 0;color:${MUTED}">${escapeHtml(body || "")}</p>
     ${link ? button("Open", link) : ""}
   `;
+  // NOTE: caller supplies the link; if omitted we won't force a chat link here.
   return safeSend({
     to,
     subject: subject || "Notification",
