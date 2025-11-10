@@ -41,26 +41,22 @@ async function startStandbyFollowups(roomId, requestId) {
   const io = getIO();
   if (!io) return;
 
-  // internal helper to safely send message
   const send = async (text, kind) => {
     try {
       await saveAndEmitSystemForClients({ roomId, text, kind });
     } catch {}
   };
 
-  // ⏱️ EXACT INTERVALS REQUESTED: 30s, 40s, then every 60s
-  const intervals = [30_000, 40_000]; // 30s first, 40s next
+  const intervals = [30_000, 40_000];
   let tick = 0;
 
   const loop = async () => {
     const req = await ProjectRequest.findById(requestId).select("pmAssigned").lean();
-    if (!req || req.pmAssigned) return; // stop once assigned
+    if (!req || req.pmAssigned) return;
 
-    // check active presence: at least one socket joined this room's clients
     const roomClients = io.sockets.adapter.rooms.get(`room:${roomId}:clients`);
     const isActive = roomClients && roomClients.size > 0;
     if (!isActive) {
-      // if client left, pause — retry later when they rejoin
       setTimeout(loop, 15_000);
       return;
     }
@@ -71,13 +67,13 @@ async function startStandbyFollowups(roomId, requestId) {
         "We’re still connecting you to an available Project Manager. Thanks for holding on!",
         "followup_30s"
       );
-      setTimeout(loop, intervals[1]); // 40s next
+      setTimeout(loop, intervals[1]);
     } else if (tick === 2) {
       await send(
         "Almost there — our team is finishing with other clients and will join shortly.",
         "followup_40s"
       );
-      setTimeout(loop, 60_000); // after this, every 60 s
+      setTimeout(loop, 60_000);
     } else {
       await send(
         "Thanks for your patience. We’re still finding the best Project Manager to assist you.",
@@ -87,7 +83,6 @@ async function startStandbyFollowups(roomId, requestId) {
     }
   };
 
-  // first follow-up at 30 s
   setTimeout(loop, intervals[0]);
 }
 
@@ -119,20 +114,43 @@ async function adjustTaskCount(userId, delta, { touchAssignDate = false } = {}) 
   return doc;
 }
 
-/* ----------------------- helper: resolve client email reliably ----------------------- */
-async function resolveClientEmail(req) {
-  // Prefer the email captured on the request
-  if (req?.email && String(req.email).trim()) return String(req.email).trim();
+/* ----------------------- helper: resolve client email (strong) ----------------------- */
+/**
+ * Tries, in order:
+ * 1) request.email
+ * 2) linked User via request.clientId
+ * 3) any ChatRoom member whose role === "Client"
+ */
+async function resolveClientEmailStrong(reqLean) {
+  if (reqLean?.email && String(reqLean.email).trim()) {
+    return String(reqLean.email).trim();
+  }
 
-  // Fallback to linked user if present
-  if (req?.clientId) {
+  if (reqLean?.clientId) {
     try {
-      const u = await User.findById(req.clientId).select("email").lean();
+      const u = await User.findById(reqLean.clientId).select("email").lean();
       if (u?.email && String(u.email).trim()) return String(u.email).trim();
     } catch {}
   }
 
-  // Nothing found
+  if (reqLean?.chatRoom) {
+    try {
+      const room = await ChatRoom.findById(reqLean.chatRoom).select("members").lean();
+      const memberIds = (room?.members || []).map(String);
+      if (memberIds.length) {
+        const clients = await User.find({
+          _id: { $in: memberIds },
+          role: "Client",
+          email: { $exists: true },
+        })
+          .select("email")
+          .lean();
+        const hit = clients.find(c => c?.email && String(c.email).trim());
+        if (hit) return String(hit.email).trim();
+      }
+    } catch {}
+  }
+
   return null;
 }
 
@@ -152,29 +170,23 @@ async function rollbackPmClaim(pmId) {
 }
 
 async function finalizePmAssignment({ request, room, pm }) {
-  // ensure membership includes PM
   await ChatRoom.updateOne({ _id: room._id }, { $addToSet: { members: pm._id } });
-  // also persist PM onto the room so sockets/UI can detect "already assigned"
   await ChatRoom.updateOne({ _id: room._id }, { $set: { pm: pm._id } });
 
-  // small helper to yield a micro-tick to the event loop
   const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
   try {
     const pmUser = await User.findById(pm._id).lean();
     const pmName = [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
 
-    // 1) Persist + emit the CLIENT-ONLY system bubble first
     await saveAndEmitSystemForClients({
       roomId: room._id.toString(),
       kind: "pm_assigned",
       text: `${pmName} has been assigned as your PM. They’ll join shortly.`,
     });
 
-    // Give the socket a brief head start to render the system bubble first
     await tick(50);
 
-    // 2) Immediately inform the room (used by clients to show the inline banner)
     getIO()?.to(room._id.toString()).emit("room:pm_assigned", {
       roomId: room._id.toString(),
       requestId: String(request._id),
@@ -187,12 +199,10 @@ async function finalizePmAssignment({ request, room, pm }) {
       at: new Date().toISOString(),
     });
 
-    // 3) Upsert the PM welcome (idempotent); emit only if newly inserted
     const welcomeText =
       `Hi! I’m ${pmName}. I’ll coordinate this project and keep you updated here. ` +
       `Please share requirements, files, or questions anytime — we’ll get rolling.`;
 
-    // Ensure welcome message sorts AFTER the assigned system bubble
     const welcomeCreatedAt = new Date(Date.now() + 250);
 
     const upsert = await Message.findOneAndUpdate(
@@ -230,11 +240,8 @@ async function finalizePmAssignment({ request, room, pm }) {
           createdAt: msgDoc.createdAt,
         });
     }
-  } catch {
-    // swallow — non-critical for ordering guarantees
-  }
+  } catch {}
 
-  // (C) notify PM (badge + in-app)
   try {
     getIO()?.to(`user:${pm._id.toString()}`).emit("pm:request_assigned", {
       requestId: request._id.toString(),
@@ -267,7 +274,6 @@ async function finalizePmAssignment({ request, room, pm }) {
     });
   } catch {}
 
-  // (D) ✉️ EMAILS (fire-and-forget): tell staff PM is assigned (rich HTML)
   (async () => {
     try {
       const [sas, pmEmails, pmUser] = await Promise.all([
@@ -289,7 +295,6 @@ async function finalizePmAssignment({ request, room, pm }) {
 /* ------------------------- utility lookups for email ------------------------- */
 
 async function getSuperAdmins() {
-  // Schema roles are exact-case: "SuperAdmin" | "Admin" | "PM" | "Engineer" | "Client"
   return User.find({ role: { $in: ["SuperAdmin", "Admin"] }, email: { $exists: true } })
     .select("_id email firstName lastName")
     .lean();
@@ -313,7 +318,7 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
     projectDescription,
     completionDate,
     clientKey: clientKeyOverride,
-    clientId, // may be null (e.g., WP intake)
+    clientId,
   } = payload;
 
   const request = await ProjectRequest.create({
@@ -329,8 +334,6 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
   });
 
   const roomTitle = `${projectTitle} - ${firstName} - ${request._id.toString().slice(-5)}`;
-
-  // include client in members when we have clientId
   const members = [];
   if (clientId) members.push(clientId);
 
@@ -346,7 +349,6 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
   request.chatRoom = room._id;
   await request.save();
 
-  // ✉️ Send emails (fire-and-forget; don’t block UX)
   (async () => {
     try {
       const [sas, pmEmails] = await Promise.all([getSuperAdmins(), getPMEmails()]);
@@ -364,7 +366,6 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
     }
   })();
 
-  // Try strict ONLINE assignment now (no offline fallback)
   let pm = await selectAndClaimOnlinePM();
 
   if (pm) {
@@ -378,7 +379,6 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
     }
   }
 
-  // If no PM online → standby bubble (client-only) + follow-ups
   if (!pm) {
     try {
       await saveAndEmitSystemForClients({
@@ -387,13 +387,10 @@ export const createProjectRequestAndAssignPM = async (payload, auditMeta = {}) =
           "All our PMs are currently assisting other clients. You're in the right place — a PM will join this chat shortly. Thanks for your patience!",
         kind: "standby",
       });
-
-      // 🔁 Schedule polite follow-ups at 30s, 40s, then every 60s
       startStandbyFollowups(room._id.toString(), request._id.toString());
     } catch {}
   }
 
-  // SuperAdmins: keep receiving the original “new request” signal
   try {
     await notifySuperAdmins({
       type: "PROJECT_REQUEST",
@@ -456,11 +453,9 @@ export const autoAssignFromStandbyForPM = async (pmId) => {
 
   if (!pending) return { assigned: false };
 
-  // Try this specific PM first — only if free/online
   let pm = await tryClaimSpecificPM(pmId, { preferFree: true, allowBusyFallback: false });
 
   if (!pm) {
-    // If someone free exists, let general picker handle it; else pick least-loaded online
     const someoneFree = await User.exists({
       role: "PM",
       isBusy: false,
@@ -495,11 +490,9 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
   if (!req) throw new Error("Request not found");
   if (!req.pmAssigned?.equals(pmUser._id)) throw new Error("Only assigned PM can set engineer");
 
-  // Persist assignment
   req.engineerAssigned = engineerId;
   await req.save();
 
-  // 📧 Email the client (rich HTML) — single, logged send
   try {
     const [pmDoc, engDoc] = await Promise.all([
       User.findById(req.pmAssigned).lean(),
@@ -507,26 +500,37 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
     ]);
     const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ");
     const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ");
-    const clientEmail = await resolveClientEmail(req);
+
+    // Use a LEAN snapshot for robust resolution
+    const reqLean = await ProjectRequest.findById(requestId)
+      .select("email clientId chatRoom firstName lastName projectTitle pmAssigned engineerAssigned")
+      .lean();
+    const clientEmail = await resolveClientEmailStrong(reqLean);
 
     console.log("[mail] DEBUG EngineerAssigned recipient:", {
       requestId: String(req._id),
-      reqEmail: req.email,
-      clientId: req.clientId,
+      reqEmail: reqLean?.email || req?.email,
+      clientId: reqLean?.clientId || req?.clientId,
+      chatRoom: String(reqLean?.chatRoom || req?.chatRoom || ""),
       clientEmail,
     });
 
     if (clientEmail) {
-      const r = await emailClientEngineerAssigned({ ...req.toObject(), email: clientEmail }, engName, pmName);
+      const r = await emailClientEngineerAssigned({ ...reqLean, email: clientEmail }, engName, pmName);
       console.log("[mail] EngineerAssigned → client:", { to: clientEmail, r });
     } else {
-      console.warn("[mail] EngineerAssigned SKIPPED (no client email)", String(req._id));
+      console.warn("[mail] EngineerAssigned SKIPPED — no client email found", {
+        requestId: String(req._id),
+        hasReqEmail: !!(reqLean?.email || req?.email),
+        hasClientId: !!(reqLean?.clientId || req?.clientId),
+        room: String(reqLean?.chatRoom || req?.chatRoom || ""),
+      });
     }
   } catch (e) {
     console.error("[mail] EngineerAssigned email error:", e?.message);
   }
 
-  // 🔴 Permanent system bubble (client-only): PM assigned an engineer
+  // client bubble
   try {
     const engDoc = await User.findById(engineerId).lean();
     const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ");
@@ -547,7 +551,6 @@ export const setEngineerForRequest = async (requestId, engineerId, pmUser, audit
     meta: { engineerId, ...auditMeta },
   });
 
-  // Notify the engineer in-app
   try {
     await createAndEmit(engineerId, {
       type: "ENGINEER_ASSIGNED",
@@ -570,7 +573,6 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
   req.__engineerAccepted = true;
   await req.save();
 
-  // 📧 Emails: client + PMs + SuperAdmins (rich templates)
   try {
     const [pmDoc, engDoc, superAdmins, pmEmails] = await Promise.all([
       req.pmAssigned ? User.findById(req.pmAssigned).lean() : null,
@@ -580,22 +582,33 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
     ]);
     const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ") || "";
     const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ") || "Engineer";
-    const clientEmail = await resolveClientEmail(req);
+
+    // Compute robust client email
+    const reqLean = await ProjectRequest.findById(requestId)
+      .select("email clientId chatRoom firstName lastName projectTitle pmAssigned engineerAssigned")
+      .lean();
+    const clientEmail = await resolveClientEmailStrong(reqLean);
 
     console.log("[mail] DEBUG EngineerAccepted recipient:", {
       requestId: String(req._id),
-      reqEmail: req.email,
-      clientId: req.clientId,
+      reqEmail: reqLean?.email || req?.email,
+      clientId: reqLean?.clientId || req?.clientId,
+      chatRoom: String(reqLean?.chatRoom || req?.chatRoom || ""),
       clientEmail,
     });
 
     const fanout = [];
     if (clientEmail) {
       fanout.push(
-        emailClientEngineerAccepted({ ...req.toObject(), email: clientEmail }, engName, pmName)
+        emailClientEngineerAccepted({ ...reqLean, email: clientEmail }, engName, pmName)
       );
     } else {
-      console.warn("[mail] EngineerAccepted SKIPPED (no client email)", String(req._id));
+      console.warn("[mail] EngineerAccepted SKIPPED — no client email found", {
+        requestId: String(req._id),
+        hasReqEmail: !!(reqLean?.email || req?.email),
+        hasClientId: !!(reqLean?.clientId || req?.clientId),
+        room: String(reqLean?.chatRoom || req?.chatRoom || ""),
+      });
     }
 
     fanout.push(
@@ -612,7 +625,6 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
     console.error("[mail] EngineerAccepted email error:", e?.message);
   }
 
-  // 🔴 Permanent system bubble (client-only)
   try {
     await saveAndEmitSystemForClients({
       roomId: req.chatRoom.toString(),
@@ -631,7 +643,6 @@ export const engineerAcceptsTask = async (requestId, engineerUser, auditMeta = {
     meta: auditMeta,
   });
 
-  // In-app notifications
   try {
     if (req.pmAssigned) {
       await createAndEmit(req.pmAssigned, {
@@ -662,7 +673,6 @@ export const markRequestReview = async (requestId, engineerUser, auditMeta = {})
   req.status = "Review";
   await req.save();
 
-  // 🔴 Permanent system bubble (client-only): Engineer completed work (ready for review)
   try {
     await saveAndEmitSystemForClients({
       roomId: req.chatRoom.toString(),
@@ -813,7 +823,6 @@ export const closeRoomAndComplete = async (requestId, pmUser, auditMeta = {}) =>
     meta: auditMeta,
   });
 
-  // ✉️ Thank-you email to client (fire-and-forget)
   (async () => {
     try {
       await emailClientThankYou(req);
@@ -899,7 +908,7 @@ export const reopenRoomAndResume = async (requestId, pmUser, auditMeta = {}) => 
 
   const room = req.chatRoom ? await ChatRoom.findById(req.chatRoom) : null;
   if (!room) throw new Error("Room not found");
-  if (!room.isClosed) return req; // idempotent
+  if (!room.isClosed) return req;
 
   await room.updateOne({ $set: { isClosed: false, reopenRequestedByClient: false } });
 

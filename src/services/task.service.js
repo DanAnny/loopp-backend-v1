@@ -6,6 +6,12 @@ import { Message } from "../models/Message.js"; // ✅ ensure available
 import { logAudit } from "./audit.service.js";
 import { getIO } from "../lib/io.js";
 import mongoose from "mongoose";
+import {
+  emailClientEngineerAssigned,
+  emailClientEngineerAccepted,
+  emailPMsEngineerAccepted,
+  emailSuperAdminsEngineerAccepted,
+} from "./email.service.js";
 
 /* 🔔 notifications */
 import { createAndEmit, notifySuperAdmins, links } from "./notify.service.js";
@@ -36,6 +42,25 @@ function coerceDeadline(v) {
   return null;
 }
 
+async function resolveClientEmailStrong(reqLean) {
+  if (reqLean?.email && String(reqLean.email).trim()) return String(reqLean.email).trim();
+  if (reqLean?.clientId) {
+    const u = await User.findById(reqLean.clientId).select("email").lean().catch(() => null);
+    if (u?.email && String(u.email).trim()) return String(u.email).trim();
+  }
+  if (reqLean?.chatRoom) {
+    const room = await ChatRoom.findById(reqLean.chatRoom).select("members").lean().catch(() => null);
+    const ids = (room?.members || []).map(String);
+    if (ids.length) {
+      const cs = await User.find({ _id: { $in: ids }, role: "Client", email: { $exists: true } })
+        .select("email").lean();
+      const hit = cs.find(c => c?.email && String(c.email).trim());
+      if (hit) return String(hit.email).trim();
+    }
+  }
+  return null;
+}
+
 /* ---------------- PM creates the single task (assigns engineer too) -------- */
 export const createTaskForRequest = async (
   { requestId, pmUser, engineerId, title, description, deadline, pmDeadline },
@@ -53,6 +78,28 @@ export const createTaskForRequest = async (
   // enforce engineer assignment now
   req.engineerAssigned = engineerId;
   await req.save();
+
+  try {
+    const [pmDoc, engDoc] = await Promise.all([
+      User.findById(pmUser._id).lean(),
+      User.findById(engineerId).lean(),
+    ]);
+    const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ") || "PM";
+    const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ") || "Engineer";
+
+    const reqLean = await ProjectRequest.findById(req._id)
+      .select("email clientId chatRoom firstName lastName projectTitle pmAssigned engineerAssigned")
+      .lean();
+    const clientEmail = await resolveClientEmailStrong(reqLean);
+
+    if (clientEmail) {
+      await emailClientEngineerAssigned({ ...reqLean, email: clientEmail }, engName, pmName);
+    } else {
+      console.warn("[mail] EngineerAssigned SKIPPED — no client email found", { requestId: String(req._id) });
+    }
+  } catch (e) {
+    console.error("[mail] EngineerAssigned email error:", e?.message);
+  }
 
   // pick deadline from either `deadline` or `pmDeadline`
   const chosenDeadline = coerceDeadline(deadline) ?? coerceDeadline(pmDeadline);
@@ -159,6 +206,36 @@ export const engineerAcceptTask = async (taskId, engineerUser, auditMeta = {}) =
     req.status = "InProgress";
   }
   await req.save();
+
+  try {
+    const [pmDoc, engDoc, superAdmins, pmEmails] = await Promise.all([
+      req.pmAssigned ? User.findById(req.pmAssigned).lean() : null,
+      User.findById(engineerUser._id).lean(),
+      getSuperAdmins(),     // reuse your helper or port it
+      getPMEmails(),        // reuse your helper or port it
+    ]);
+    const pmName  = [pmDoc?.firstName, pmDoc?.lastName].filter(Boolean).join(" ") || "";
+    const engName = [engDoc?.firstName, engDoc?.lastName].filter(Boolean).join(" ") || "Engineer";
+
+    const reqLean = await ProjectRequest.findById(req._id)
+      .select("email clientId chatRoom firstName lastName projectTitle pmAssigned engineerAssigned")
+      .lean();
+    const clientEmail = await resolveClientEmailStrong(reqLean);
+
+    const fanout = [];
+    if (clientEmail) {
+      fanout.push(emailClientEngineerAccepted({ ...reqLean, email: clientEmail }, engName, pmName));
+    } else {
+      console.warn("[mail] EngineerAccepted SKIPPED — no client email found", { requestId: String(req._id) });
+    }
+    fanout.push(
+      emailPMsEngineerAccepted(req, engName, pmName, pmEmails || []),
+      emailSuperAdminsEngineerAccepted(req, engName, pmName, superAdmins || [])
+    );
+    await Promise.allSettled(fanout);
+  } catch (e) {
+    console.error("[mail] EngineerAccepted email error:", e?.message);
+  }
 
   await logAudit({
     action: "TASK_ACCEPTED",
