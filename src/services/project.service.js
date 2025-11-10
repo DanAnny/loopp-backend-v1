@@ -174,10 +174,15 @@ async function finalizePmAssignment({ request, room, pm }) {
 
   const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
-  try {
-    const pmUser = await User.findById(pm._id).lean();
-    const pmName = [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
+  // ✅ Hoist so it's visible to the whole function (incl. IIFEs below)
+  let pmName = "PM";
+  let pmUser = null;
 
+  try {
+    pmUser = await User.findById(pm._id).lean();
+    pmName = [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
+
+    // Client-facing system bubble
     await saveAndEmitSystemForClients({
       roomId: room._id.toString(),
       kind: "pm_assigned",
@@ -186,6 +191,7 @@ async function finalizePmAssignment({ request, room, pm }) {
 
     await tick(50);
 
+    // Realtime event to room
     getIO()?.to(room._id.toString()).emit("room:pm_assigned", {
       roomId: room._id.toString(),
       requestId: String(request._id),
@@ -198,6 +204,7 @@ async function finalizePmAssignment({ request, room, pm }) {
       at: new Date().toISOString(),
     });
 
+    // First PM welcome message (idempotent via kind: "pm_welcome")
     const welcomeText =
       `Hi! I’m ${pmName}. I’ll coordinate this project and keep you updated here. ` +
       `Please share requirements, files, or questions anytime — we’ll get rolling.`;
@@ -241,6 +248,7 @@ async function finalizePmAssignment({ request, room, pm }) {
     }
   } catch {}
 
+  // ✉️ Client email: PM assigned
   (async () => {
     try {
       const reqLean = await ProjectRequest.findById(request._id)
@@ -260,6 +268,7 @@ async function finalizePmAssignment({ request, room, pm }) {
     }
   })();
 
+  // PM realtime + in-app + audit
   try {
     getIO()?.to(`user:${pm._id.toString()}`).emit("pm:request_assigned", {
       requestId: request._id.toString(),
@@ -292,14 +301,10 @@ async function finalizePmAssignment({ request, room, pm }) {
     });
   } catch {}
 
+  // Staff fan-out (PMs + SuperAdmins)
   (async () => {
     try {
-      const [sas, pmEmails, pmUser] = await Promise.all([
-        getSuperAdmins(),
-        getPMEmails(),
-        User.findById(pm._id).lean(),
-      ]);
-      const pmName = [pmUser?.firstName, pmUser?.lastName].filter(Boolean).join(" ") || "PM";
+      const [sas, pmEmails] = await Promise.all([getSuperAdmins(), getPMEmails()]);
       await Promise.allSettled([
         emailPMsOnPmAssigned(request, pmName, pmEmails || []),
         emailSuperAdminsAssigned(request, pmName, sas || [], /* engineerName */ undefined),
