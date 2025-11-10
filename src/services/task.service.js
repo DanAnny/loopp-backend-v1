@@ -22,6 +22,7 @@ import {
   emailClientEngineerAccepted,
   emailPMsEngineerAccepted,
   emailSuperAdminsEngineerAccepted,
+  emailClientProjectSubmitted,
 } from "./email.service.js";
 
 /* ========================================================================== */
