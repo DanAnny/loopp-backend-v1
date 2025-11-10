@@ -24,8 +24,24 @@ export const addUserBySuperAdmin = async (email, role, phone, firstName, lastNam
 
 /* --------------------------------- Auth -------------------------------- */
 export const authenticateUser = async (email, password) => {
-  const { user } = await User.authenticate()(email, password);
-  if (!user) throw new Error("Invalid credentials");
+  const authenticate = User.authenticate();
+  const { user, error } = await authenticate(email, password);
+
+  // No user found at all → email does not exist
+  if (!user && error?.message?.includes("user not found")) {
+    throw new Error("Email does not exist");
+  }
+
+  // User exists but wrong password
+  if (!user && error?.message?.includes("Password or username is incorrect")) {
+    throw new Error("Incorrect password");
+  }
+
+  // Fallback: unexpected failure
+  if (!user) {
+    throw new Error("Authentication failed");
+  }
+
   return user;
 };
 
