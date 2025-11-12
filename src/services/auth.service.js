@@ -23,22 +23,41 @@ export const addUserBySuperAdmin = async (email, role, phone, firstName, lastNam
 };
 
 /* --------------------------------- Auth -------------------------------- */
-export const authenticateUser = async (email, password) => {
-  const authenticate = User.authenticate();
-  const { user, error } = await authenticate(email, password);
+function normalizeEmail(email = "") {
+  return String(email).trim().toLowerCase();
+}
 
-  // No user found at all → email does not exist
-  if (!user && error?.message?.includes("user not found")) {
+/**
+ * Authenticate with clear error messages:
+ * - If email doesn't exist → "Email does not exist"
+ * - If password is wrong → "Incorrect password"
+ * - Otherwise returns the user doc
+ */
+export const authenticateUser = async (email, password) => {
+  const e = normalizeEmail(email);
+
+  // Basic format guard (optional; remove if you don't want this)
+  const emailRx = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRx.test(e)) {
+    throw new Error("Invalid email format");
+  }
+
+  // 1) Look up the user first so a non-existent email never reports "wrong password"
+  const existing = await User.findOne({ email: e }).exec();
+  if (!existing) {
     throw new Error("Email does not exist");
   }
 
-  // User exists but wrong password
-  if (!user && error?.message?.includes("Password or username is incorrect")) {
-    throw new Error("Incorrect password");
-  }
+  // 2) Now let passport-local-mongoose validate the password
+  const authenticate = User.authenticate();
+  const { user, error } = await authenticate(e, password);
 
-  // Fallback: unexpected failure
   if (!user) {
+    // Common PLM messages vary; map everything to a clean "Incorrect password"
+    if (error) {
+      // You can inspect error.name === 'IncorrectPasswordError' etc.
+      throw new Error("Incorrect password");
+    }
     throw new Error("Authentication failed");
   }
 

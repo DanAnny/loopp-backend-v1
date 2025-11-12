@@ -103,6 +103,8 @@ export const addUser = async (req, res) => {
 export const signIn = async (req, res) => {
   try {
     const { email, password } = req.body;
+
+    // This now throws "Email does not exist" OR "Incorrect password" precisely
     const user = await authService.authenticateUser(email, password);
     const { accessToken, refreshToken } = await authService.createTokens(user);
 
@@ -122,6 +124,7 @@ export const signIn = async (req, res) => {
       },
     });
   } catch (err) {
+    // Keep 400 so the frontend can show the message and not treat as server error
     res.status(400).json({ success: false, message: err.message });
   }
 };
