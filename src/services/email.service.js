@@ -151,7 +151,7 @@ function button(label, href) {
   `;
 }
 
-/** 2-line section title + paragraph + CTA button (like your screenshot) */
+/** 2-line section title + paragraph + CTA button */
 function ctaBlock(heading, text, ctaLabel, ctaHref) {
   return `
     <h3 style="margin:20px 0 6px 0;font-size:16px;line-height:1.35;color:${TEXT}">${escapeHtml(heading)}</h3>
@@ -593,6 +593,41 @@ function clientEngineerAssignedHtml(req, engineerName, pmName) {
 }
 
 /* ============================================================================
+ * NEW: Email Verification (re-uses the dark template)
+ * ========================================================================== */
+
+function verifySubject() {
+  return "Verify your email — Loopp";
+}
+function verifyHtml({ firstName, verifyUrl }) {
+  const inner = `
+    <h1 style="margin:0 0 10px 0;font-size:26px;color:${TEXT}">Verify your email</h1>
+    <p style="margin:0 0 12px 0;color:${MUTED}">
+      ${firstName ? `Hello <strong>${escapeHtml(firstName)}</strong>,` : "Hello,"} please confirm your email to continue.
+    </p>
+    ${button("Verify Email", verifyUrl)}
+    <p style="margin:12px 0 0;color:${MUTED}">Or paste this link into your browser:</p>
+    <p style="margin:6px 0 0;color:#9ca3af;word-break:break-all">${escapeHtml(verifyUrl)}</p>
+    <p style="margin:16px 0 0;color:${MUTED}">This link expires in 24 hours.</p>
+  `;
+  return wrapHtml(inner, "Verify your email", CLIENT_GIF);
+}
+
+/**
+ * Public API — Send verification email
+ * @param {{to:string, firstName?:string, verifyUrl:string}} opts
+ */
+export async function emailSendVerification(opts = {}) {
+  const { to, firstName = "", verifyUrl } = opts;
+  if (!to || !verifyUrl) return { skipped: true, reason: "missing to/verifyUrl" };
+  return safeSend({
+    to,
+    subject: verifySubject(),
+    html: verifyHtml({ firstName, verifyUrl }),
+  });
+}
+
+/* ============================================================================
  * Public API
  * ========================================================================== */
 
@@ -637,7 +672,7 @@ export async function emailPMsBroadcastNewRequest(req, pmEmails = [], pmName, en
     const chunk = list.slice(i, i + CHUNK);
     const to = chunk[0];
     const bcc = chunk.slice(1);
-    // eslint-disable-next-line no-await- in-loop
+    // eslint-disable-next-line no-await-in-loop
     const r = await safeSend({
       to,
       bcc,

@@ -1,7 +1,6 @@
 import { Notification } from "../models/Notification.js";
 import { User } from "../models/User.js";
 import { getIO } from "../lib/io.js";
-import { sendMail as sendEmail } from "../lib/mailer.js";
 import { emailNotifyUser } from "./email.service.js";
 
 export const links = {

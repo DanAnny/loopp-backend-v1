@@ -1,4 +1,3 @@
-// backend/src/middleware/auth.middleware.js
 import passport from "passport";
 import jwt from "jsonwebtoken";
 import { config } from "../config/env.js";
