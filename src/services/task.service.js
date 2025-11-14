@@ -1,4 +1,3 @@
-// src/services/tasks.service.js
 import mongoose from "mongoose";
 
 import { Task } from "../models/Task.js";
@@ -421,7 +420,7 @@ export const engineerCompleteTask = async (taskId, engineerUser, auditMeta = {})
       });
 
       const text =
-        "---- Project has been submitted; type /rate and click send to rate the PM, Engineer, and their teamwork ----";
+        "---- Project has been submitted for review ----";
       const msg = await Message.create({
         room: roomId,
         senderType: "System",

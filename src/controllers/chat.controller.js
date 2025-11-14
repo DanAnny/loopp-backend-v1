@@ -36,13 +36,14 @@ const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
       senderName: "System",
       clientEmail: null,
       text: plain.text || "",
-      attachments: [], // system never carries files in our UI
+      attachments: [],
       createdAt: plain.createdAt,
       updatedAt: plain.updatedAt,
       visibleTo: plain.visibleTo || "All",
       kind: plain.kind || null,
-      // helpful for UI time formatting
       createdAtISO: new Date(plain.createdAt || Date.now()).toISOString(),
+      allowRating: !!plain.allowRating,
+      ratingRequestId: plain.meta?.requestId || null,
     };
   }
 
@@ -50,19 +51,18 @@ const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
   let senderRole = "User";
   let senderName = "User";
 
-  // resolve sender
   if (plain.senderType === "Client") {
     senderRole = "Client";
-
-    // ✅ prefer full name over email
     const full = [plain.firstName, plain.lastName].filter(Boolean).join(" ");
     senderName = plain.senderName || full || plain.clientEmail?.split("@")[0] || "Client";
-
   } else if (plain.sender) {
-    const sid = typeof plain.sender === "string"
-      ? plain.sender
-      : plain.sender?._id?.toString?.();
-    const u = usersById.get(sid) || (typeof plain.sender === "object" && plain.sender._id ? plain.sender : null);
+    const sid =
+      typeof plain.sender === "string"
+        ? plain.sender
+        : plain.sender?._id?.toString?.();
+    const u =
+      usersById.get(sid) ||
+      (typeof plain.sender === "object" && plain.sender._id ? plain.sender : null);
 
     const r = (u?.role || plain.senderRole || "User").toString();
     if (/client/i.test(r)) senderRole = "Client";
@@ -71,19 +71,30 @@ const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
     else senderRole = "User";
 
     const full = [u?.firstName, u?.lastName].filter(Boolean).join(" ");
-    senderName = plain.senderName || full || u?.username || u?.email?.split("@")[0] || senderRole;
+    senderName =
+      plain.senderName ||
+      full ||
+      u?.username ||
+      u?.email?.split("@")[0] ||
+      senderRole;
   }
 
-  // ✅ normalize attachments for the frontend viewer
   const normalizedAttachments = Array.isArray(plain.attachments)
     ? plain.attachments.map((a) => ({
-        url: `/api/files/${a.fileId}?download=0`,      // inline preview
+        url: `/api/files/${a.fileId}?download=0`,
         name: a.filename,
         type: a.contentType || "application/octet-stream",
         size: a.length,
-        fileId: a.fileId,                               // keep original if needed
+        fileId: a.fileId,
       }))
     : [];
+
+  const allowRating = !!(plain.allowRating || plain.meta?.allowRating);
+  const ratingRequestId =
+    plain.meta?.requestId ||
+    plain.meta?.ratingRequestId ||
+    plain.requestId ||
+    null;
 
   return {
     _id: plain._id,
@@ -92,7 +103,7 @@ const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
     senderType: plain.senderType || "User",
     senderRole,
     senderName,
-    clientEmail: plain.clientEmail || null,
+    clientEmail: plain.clientEmail || clientEmailFallback || null,
     text: plain.text || "",
     attachments: normalizedAttachments,
     createdAt: plain.createdAt,
@@ -100,6 +111,8 @@ const shapeMessage = (m, usersById = new Map(), clientEmailFallback = null) => {
     visibleTo: plain.visibleTo || "All",
     kind: plain.kind || null,
     createdAtISO: new Date(plain.createdAt || Date.now()).toISOString(),
+    allowRating,
+    ratingRequestId,
   };
 };
 
@@ -133,18 +146,31 @@ export const sendMessage = async (req, res) => {
           )
         );
       } catch (err) {
-        return res.status(500).json({ success: false, message: `Upload failed: ${err.message}` });
+        return res
+          .status(500)
+          .json({ success: false, message: `Upload failed: ${err.message}` });
       }
     }
 
     if (!text && attachments.length === 0) {
-      return res.status(400).json({ success: false, message: "Empty message: provide text or files" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Empty message: provide text or files" });
     }
 
-    const msg = await chatService.postMessage(roomId, req.user, { text, attachments }, { ip: req.ip });
+    const msg = await chatService.postMessage(
+      roomId,
+      req.user,
+      { text, attachments },
+      { ip: req.ip }
+    );
 
     const u = await User.findById(req.user._id).lean();
-    const shaped = shapeMessage({ ...(msg.toObject?.() || msg), sender: u, senderType: "User" });
+    const shaped = shapeMessage({
+      ...(msg.toObject?.() || msg),
+      sender: u,
+      senderType: "User",
+    });
 
     getIO()?.to(roomId.toString()).emit("message", shaped);
     return res.status(201).json({ success: true, message: shaped });
@@ -179,11 +205,16 @@ export const getMessages = async (req, res) => {
       (m) => m.visibleTo !== "Client" && m.senderType !== "System"
     );
     const ids = [
-      ...new Set(filtered
-        .filter((m) => m.senderType !== "Client" && m.sender)
-        .map((m) => m.sender.toString()))
+      ...new Set(
+        filtered
+          .filter((m) => m.senderType !== "Client" && m.sender)
+          .map((m) => m.sender.toString())
+      ),
     ];
-    const users = await User.find({ _id: { $in: ids } }, "firstName lastName email role").lean();
+    const users = await User.find(
+      { _id: { $in: ids } },
+      "firstName lastName email role"
+    ).lean();
     const map = new Map(users.map((u) => [u._id.toString(), u]));
 
     const shaped = filtered.map((m) => shapeMessage(m, map));
@@ -195,7 +226,9 @@ export const getMessages = async (req, res) => {
 
 export const myRooms = async (req, res) => {
   try {
-    const rooms = await ChatRoom.find({ members: req.user._id }).sort({ updatedAt: -1 }).lean();
+    const rooms = await ChatRoom.find({ members: req.user._id })
+      .sort({ updatedAt: -1 })
+      .lean();
     res.json({ success: true, rooms });
   } catch (e) {
     res.status(400).json({ success: false, message: e.message });
@@ -205,14 +238,22 @@ export const myRooms = async (req, res) => {
 export const getRoomByKey = async (req, res) => {
   try {
     const { key } = req.params;
-    if (!key) return res.status(400).json({ success: false, message: "Missing key" });
+    if (!key)
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing key" });
 
     const room = await ChatRoom.findOne({ roomKey: key }).lean();
-    if (!room) return res.status(404).json({ success: false, message: "Room not found" });
+    if (!room)
+      return res
+        .status(404)
+        .json({ success: false, message: "Room not found" });
 
     const role = (req.user?.role || "").toString();
     const adminBypass = role === "Admin" || role === "SuperAdmin";
-    const isMember = room.members?.some?.((m) => m.toString() === req.user._id.toString());
+    const isMember = room.members?.some?.(
+      (m) => m.toString() === req.user._id.toString()
+    );
 
     if (!adminBypass && !isMember) {
       return res.status(403).json({ success: false, message: "Forbidden" });
@@ -236,6 +277,71 @@ export const getRoomByKey = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/chat/rooms/:roomId/rating-prompt
+ * Called from PM slash action: “Ask client to rate project”
+ */
+export const sendRatingPrompt = async (req, res) => {
+  try {
+    const roomId = (req.params.roomId || "").toString().trim();
+    if (!roomId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "roomId is required" });
+    }
+
+    await chatService.ensureMember(roomId, req.user._id, { allowClosed: false });
+
+    const pr = await ProjectRequest.findOne({ chatRoom: roomId }).lean();
+    if (!pr) {
+      return res.status(404).json({
+        success: false,
+        message: "Project request not found for this room",
+      });
+    }
+
+    const msg = await Message.create({
+      room: roomId,
+      senderType: "User",
+      sender: req.user._id,
+      text: "⭐ Please rate your experience with this project",
+      attachments: [],
+      visibleTo: "All",
+      kind: "rating_prompt",
+      allowRating: true,
+      meta: {
+        allowRating: true,
+        requestId: pr._id,
+      },
+    });
+
+    const u = await User.findById(req.user._id).lean();
+    const shaped = shapeMessage({
+      ...(msg.toObject?.() || msg),
+      sender: u,
+      senderType: "User",
+    });
+
+    try {
+      getIO()?.to(roomId.toString()).emit("message", shaped);
+    } catch (_) {}
+
+    return res.status(201).json({ success: true, message: shaped });
+  } catch (e) {
+    const msg = e?.message || "Failed to send rating prompt";
+    if (/forbidden|not a room member/i.test(msg)) {
+      return res.status(403).json({ success: false, message: msg });
+    }
+    if (/room not found/i.test(msg)) {
+      return res.status(404).json({ success: false, message: msg });
+    }
+    if (/room closed/i.test(msg)) {
+      return res.status(423).json({ success: false, message: "Room closed" });
+    }
+    return res.status(400).json({ success: false, message: msg });
+  }
+};
+
 /* ========================================================================== */
 /*                         PUBLIC CLIENT-KEY ENDPOINTS                         */
 /* ========================================================================== */
@@ -247,11 +353,20 @@ export const clientGetMessages = async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit || "100", 10), 200);
     const cursor = req.query.cursor || null;
 
-    if (!clientKey) return res.status(400).json({ success: false, message: "Missing clientKey" });
+    if (!clientKey)
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing clientKey" });
 
     const pr = await ProjectRequest.findById(requestId).lean();
-    if (!pr) return res.status(404).json({ success: false, message: "Request not found" });
-    if (pr.clientKey !== clientKey) return res.status(403).json({ success: false, message: "Invalid key" });
+    if (!pr)
+      return res
+        .status(404)
+        .json({ success: false, message: "Request not found" });
+    if (pr.clientKey !== clientKey)
+      return res
+        .status(403)
+        .json({ success: false, message: "Invalid key" });
 
     if (!pr.chatRoom) {
       return res.json({ success: true, messages: [], nextCursor: null });
@@ -261,12 +376,21 @@ export const clientGetMessages = async (req, res) => {
     if (cursor) q._id = { $gt: cursor };
 
     const msgs = await Message.find(q).sort({ _id: 1 }).limit(limit).lean();
-    const nextCursor = msgs.length ? String(msgs[msgs.length - 1]._id) : null;
+    const nextCursor = msgs.length
+      ? String(msgs[msgs.length - 1]._id)
+      : null;
 
     const staffIds = [
-      ...new Set(msgs.filter((m) => m.senderType !== "Client" && m.sender).map((m) => m.sender.toString())),
+      ...new Set(
+        msgs
+          .filter((m) => m.senderType !== "Client" && m.sender)
+          .map((m) => m.sender.toString())
+      ),
     ];
-    const staff = await User.find({ _id: { $in: staffIds } }, "firstName lastName email role").lean();
+    const staff = await User.find(
+      { _id: { $in: staffIds } },
+      "firstName lastName email role"
+    ).lean();
     const map = new Map(staff.map((u) => [u._id.toString(), u]));
 
     const shaped = msgs.map((m) => shapeMessage(m, map, pr.email));
@@ -281,12 +405,25 @@ export const clientSendMessage = async (req, res) => {
     const { requestId, text = "" } = req.body;
     const clientKey = req.body.clientKey || req.get("x-client-key");
 
-    if (!clientKey) return res.status(400).json({ success: false, message: "Missing clientKey" });
+    if (!clientKey)
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing clientKey" });
 
     const pr = await ProjectRequest.findById(requestId).lean();
-    if (!pr) return res.status(404).json({ success: false, message: "Request not found" });
-    if (pr.clientKey !== clientKey) return res.status(403).json({ success: false, message: "Invalid key" });
-    if (!pr.chatRoom) return res.status(409).json({ success: false, message: "Chat room not yet available" });
+    if (!pr)
+      return res
+        .status(404)
+        .json({ success: false, message: "Request not found" });
+    if (pr.clientKey !== clientKey)
+      return res
+        .status(403)
+        .json({ success: false, message: "Invalid key" });
+    if (!pr.chatRoom)
+      return res.status(409).json({
+        success: false,
+        message: "Chat room not yet available",
+      });
 
     const files = Array.isArray(req.files) ? req.files : [];
     const nonEmpty = files.filter((f) => f?.buffer && f.buffer.length > 0);
@@ -304,12 +441,16 @@ export const clientSendMessage = async (req, res) => {
           )
         );
       } catch (err) {
-        return res.status(500).json({ success: false, message: `Upload failed: ${err.message}` });
+        return res
+          .status(500)
+          .json({ success: false, message: `Upload failed: ${err.message}` });
       }
     }
 
     if (!text && attachments.length === 0) {
-      return res.status(400).json({ success: false, message: "Empty message: provide text or files" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Empty message: provide text or files" });
     }
 
     const msg = await Message.create({
@@ -327,7 +468,9 @@ export const clientSendMessage = async (req, res) => {
       pr.email || null
     );
 
-    try { getIO()?.to(pr.chatRoom.toString()).emit("message", shaped); } catch {}
+    try {
+      getIO()?.to(pr.chatRoom.toString()).emit("message", shaped);
+    } catch (_) {}
 
     res.status(201).json({ success: true, message: shaped });
   } catch (e) {

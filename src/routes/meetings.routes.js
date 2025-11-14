@@ -1,16 +1,10 @@
+// backend/src/routes/meetings.routes.js
 import express from "express";
-import { createZoomMeetingController } from "../controllers/meetings.controller.js";
-
-// If you have existing middlewares:
-// import { requireAuth } from "../middlewares/auth.js";
-// import { requireRole } from "../middlewares/roles.js";
+import { requireAuth } from "../middleware/auth.middleware.js";
+import { createGoogleMeetHandler } from "../controllers/meetings.controller.js";
 
 const router = express.Router();
 
-// POST /meetings/zoom
-// Example with guards:
-// router.post("/zoom", requireAuth, requireRole(["PM", "Admin", "SuperAdmin"]), createZoomMeetingController);
-
-router.post("/zoom", createZoomMeetingController);
+router.post("/google-meet", requireAuth, createGoogleMeetHandler);
 
 export default router;

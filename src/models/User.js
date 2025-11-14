@@ -14,11 +14,19 @@ const UserSchema = new mongoose.Schema(
     email:     { type: String, required: true, unique: true, lowercase: true, trim: true },
     phone:     { type: String, required: true, trim: true },
 
+    emailVerifyOtpHash: { type: String, default: null },
+    emailVerifyOtpExpiresAt: { type: Date, default: null },
+    lastVerifyEmailAt: { type: Date, default: null },
+
     role:      { type: String, enum: roles, required: true },
 
     // One-time email verification
     isVerified: { type: Boolean, default: false },
     lastVerifiedAt: { type: Date },
+
+    googleId:           { type: String, default: null },
+    googleEmail:        { type: String, default: null },
+    googleRefreshToken: { type: String, default: null },
 
     // workload & distribution
     isBusy:             { type: Boolean, default: false },

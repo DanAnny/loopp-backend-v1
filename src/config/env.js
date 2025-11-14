@@ -29,4 +29,9 @@ export const config = {
     accessExp: process.env.ACCESS_TOKEN_EXP || "15m",
     refreshExp: process.env.REFRESH_TOKEN_EXP || "14d",
   },
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    redirectUri: process.env.GOOGLE_REDIRECT_URI,
+  },
 };

@@ -6,26 +6,99 @@ import {
   hashToken,
 } from "../utils/token.utils.js";
 
-/* ------------------------------ SuperAdmin ------------------------------ */
-export const registerSuperAdmin = async (email, password, phone, firstName, lastName, gender) => {
-  const existing = await User.findOne({ role: "SuperAdmin" });
-  if (existing) throw new Error("SuperAdmin already exists");
+/* -------------------------- helpers -------------------------- */
+function normalizeEmail(email = "") {
+  return String(email).trim().toLowerCase();
+}
 
-  const superAdmin = new User({ email, phone, firstName, lastName, gender, role: "SuperAdmin" });
+function normalizePhone(phone = "") {
+  return String(phone).trim();
+}
+
+/* ------------------------------ SuperAdmin ------------------------------ */
+export const registerSuperAdmin = async (
+  email,
+  password,
+  phone,
+  firstName,
+  lastName,
+  gender
+) => {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPhone = normalizePhone(phone);
+
+  // There should only ever be one SuperAdmin
+  const existingSuper = await User.findOne({ role: "SuperAdmin" });
+  if (existingSuper) throw new Error("SuperAdmin already exists");
+
+  // Extra safety: no duplicate email/phone at all
+  const clash = await User.findOne({
+    $or: [{ email: normalizedEmail }, { phone: normalizedPhone }],
+  }).lean();
+
+  if (clash) {
+    if (clash.email === normalizedEmail && clash.phone === normalizedPhone) {
+      throw new Error("User with this email and phone already exists");
+    } else if (clash.email === normalizedEmail) {
+      throw new Error("User with this email already exists");
+    } else {
+      throw new Error("User with this phone already exists");
+    }
+  }
+
+  const superAdmin = new User({
+    email: normalizedEmail,
+    phone: normalizedPhone,
+    firstName,
+    lastName,
+    gender,
+    role: "SuperAdmin",
+  });
+
   await User.register(superAdmin, password);
   return superAdmin;
 };
 
-export const addUserBySuperAdmin = async (email, role, phone, firstName, lastName, gender) => {
-  const user = new User({ email, phone, firstName, lastName, gender, role });
-  await User.register(user, phone); // password = phone
+export const addUserBySuperAdmin = async (
+  email,
+  role,
+  phone,
+  firstName,
+  lastName,
+  gender
+) => {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPhone = normalizePhone(phone);
+
+  const clash = await User.findOne({
+    $or: [{ email: normalizedEmail }, { phone: normalizedPhone }],
+  }).lean();
+
+  if (clash) {
+    if (clash.email === normalizedEmail && clash.phone === normalizedPhone) {
+      throw new Error("User with this email and phone already exists");
+    } else if (clash.email === normalizedEmail) {
+      throw new Error("User with this email already exists");
+    } else {
+      throw new Error("User with this phone already exists");
+    }
+  }
+
+  const user = new User({
+    email: normalizedEmail,
+    phone: normalizedPhone,
+    firstName,
+    lastName,
+    gender,
+    role,
+  });
+
+  // default password = phone
+  await User.register(user, normalizedPhone);
   return user;
 };
 
 /* --------------------------------- Auth -------------------------------- */
-function normalizeEmail(email = "") {
-  return String(email).trim().toLowerCase();
-}
 
 /**
  * Authenticate with clear error messages:
@@ -36,7 +109,6 @@ function normalizeEmail(email = "") {
 export const authenticateUser = async (email, password) => {
   const e = normalizeEmail(email);
 
-  // Basic format guard (optional; remove if you don't want this)
   const emailRx = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRx.test(e)) {
     throw new Error("Invalid email format");
@@ -53,9 +125,7 @@ export const authenticateUser = async (email, password) => {
   const { user, error } = await authenticate(e, password);
 
   if (!user) {
-    // Common PLM messages vary; map everything to a clean "Incorrect password"
     if (error) {
-      // You can inspect error.name === 'IncorrectPasswordError' etc.
       throw new Error("Incorrect password");
     }
     throw new Error("Authentication failed");
@@ -100,14 +170,20 @@ export const refreshAccessToken = async (token) => {
 /** Strict offline on logout (revokes RT and flips online=false immediately). */
 export const logoutUser = async (token, userId = null) => {
   const hashed = hashToken(token);
-  await RefreshToken.updateOne({ tokenHash: hashed }, { revoked: true }).catch(() => {});
+  await RefreshToken.updateOne(
+    { tokenHash: hashed },
+    { revoked: true }
+  ).catch(() => {});
   if (userId) {
     await User.updateOne(
       { _id: userId },
-      { $set: { online: false, lastActive: new Date(0) }, $inc: { tokenVersion: 1 } }
+      {
+        $set: { online: false, lastActive: new Date(0) },
+        $inc: { tokenVersion: 1 },
+      }
     ).catch(() => {});
   }
 };
 
 // re-export for controllers
-export { hashToken };
+export { hashToken, normalizeEmail, normalizePhone };

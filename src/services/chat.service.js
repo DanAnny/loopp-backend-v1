@@ -1,3 +1,4 @@
+// backend/src/services/chat.service.js
 import { ChatRoom } from "../models/ChatRoom.js";
 import { Message } from "../models/Message.js";
 import { ProjectRequest } from "../models/ProjectRequest.js";
@@ -71,7 +72,19 @@ export async function getRoomMessages(roomId, userId, limit = 50, cursor = null)
 
   // Projection = only what UI needs; pairs with {room:1,_id:-1} index
   const docs = await Message
-    .find(q, { _id: 1, room: 1, sender: 1, senderType: 1, text: 1, attachments: 1, createdAt: 1, visibleTo: 1, kind: 1 })
+    .find(q, {
+      _id: 1,
+      room: 1,
+      sender: 1,
+      senderType: 1,
+      text: 1,
+      attachments: 1,
+      createdAt: 1,
+      visibleTo: 1,
+      kind: 1,
+      allowRating: 1,
+      meta: 1,
+    })
     .sort({ _id: -1 })
     .limit(Math.max(1, Math.min(200, limit)))
     .lean();
@@ -130,7 +143,19 @@ export const clientFetch = async ({ requestId, clientKey, limit = 50, cursor = n
 
   // Match the same projection as authenticated reads for speed + consistency
   const items = await Message
-    .find(query, { _id: 1, room: 1, sender: 1, senderType: 1, text: 1, attachments: 1, createdAt: 1, visibleTo: 1, kind: 1 })
+    .find(query, {
+      _id: 1,
+      room: 1,
+      sender: 1,
+      senderType: 1,
+      text: 1,
+      attachments: 1,
+      createdAt: 1,
+      visibleTo: 1,
+      kind: 1,
+      allowRating: 1,
+      meta: 1,
+    })
     .sort({ _id: -1 })
     .limit(Math.max(1, Math.min(200, limit)))
     .lean();

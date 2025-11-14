@@ -1,27 +1,77 @@
-// controllers/meetings.controller.js
-import { createInstantMeeting } from "../services/zoom.service.js";
+// backend/src/controllers/meetings.controller.js
+import { User } from "../models/User.js";
+import { ProjectRequest } from "../models/ProjectRequest.js";
+import { createGoogleMeetEvent } from "../services/google.service.js";
 
-/**
- * POST /meetings/zoom
- * body: { projectId?: string, topic?: string, durationMinutes?: number }
- * Returns: { meeting_id, join_url, start_url, password, projectId }
- */
-export async function createZoomMeetingController(req, res) {
+export async function createGoogleMeetHandler(req, res) {
   try {
-    const { projectId, topic } = req.body;
+    // 🔧 make sure we get the actual id
+    const userId = req.user?.id || req.user?._id;
 
-    // Optional: enforce permissions (PM only) and project membership
-    // Example (swap for your real guards):
-    // if (!req.user) return res.status(401).json({ message: "Unauthorized" });
-    // if (!["PM", "SuperAdmin", "Admin"].includes(String(req.user.role))) {
-    //   return res.status(403).json({ message: "Only PMs can create meetings" });
-    // }
-    // TODO: verify req.user is PM of projectId if sent
+    if (!userId) {
+      return res
+        .status(401)
+        .json({ success: false, message: "No authenticated user id found" });
+    }
 
-    const meeting = await createInstantMeeting({ topic });
-    return res.json({ ...meeting, projectId: projectId || null });
-  } catch (e) {
-    console.error("createZoomMeetingController error:", e);
-    return res.status(500).json({ message: e.message || "Failed to create Zoom meeting" });
+    const pm = await User.findById(userId);
+    if (!pm) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    const { projectId, startISO, endISO } = req.body;
+
+    const project = projectId
+      ? await ProjectRequest.findById(projectId)
+      : null;
+
+    // ✅ pass PM-selected times through to the Google helper
+    const { meetUrl, eventId, start, end } = await createGoogleMeetEvent({
+      user: pm,
+      project,
+      startISO,
+      endISO,
+    });
+
+    if (project) {
+      project.lastMeet = {
+        url: meetUrl,
+        eventId,
+        start,
+        end,
+        createdBy: pm._id,
+      };
+      await project.save({ validateBeforeSave: false });
+    }
+
+    return res.json({
+      success: true,
+      meetUrl,
+      joinUrl: meetUrl,
+      eventId,
+      start,
+      end,
+    });
+  } catch (err) {
+    console.error("createGoogleMeetHandler error:", err?.response?.data || err);
+
+    if (
+      err.code === "GOOGLE_NOT_CONNECTED" ||
+      err.code === "MISSING_GOOGLE_REFRESH_TOKEN"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Please connect your Google account in Loopp before creating a Meet link.",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create Google Meet link. Please try again.",
+      detail: err.message,
+    });
   }
 }

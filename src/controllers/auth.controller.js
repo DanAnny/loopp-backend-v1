@@ -6,7 +6,10 @@ import { User } from "../models/User.js";
 import { RefreshToken } from "../models/RefreshToken.js";
 import { getIO } from "../lib/io.js";
 import { config } from "../config/env.js";
-import { createAndSendVerifyEmail, consumeVerifyToken } from "../services/verify.service.js";
+import {
+  createAndSendVerifyEmail,
+  consumeVerifyToken,
+} from "../services/verify.service.js";
 
 // Helper to set cross-site refresh cookie the SAME way everywhere
 function setRefreshCookie(res, token) {
@@ -23,8 +26,13 @@ function setRefreshCookie(res, token) {
 // ---------- NEW: /auth/me ----------
 export async function me(req, res) {
   try {
-    const user = await User.findById(req.user?._id || req.user?.id || req.userId).lean();
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    const user = await User.findById(
+      req.user?._id || req.user?.id || req.userId
+    ).lean();
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     res.json({
       success: true,
       user: {
@@ -39,7 +47,10 @@ export async function me(req, res) {
       },
     });
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message || "Failed to load profile" });
+    res.status(500).json({
+      success: false,
+      message: e.message || "Failed to load profile",
+    });
   }
 }
 
@@ -47,9 +58,16 @@ export const signUpSuperAdmin = async (req, res) => {
   try {
     const { email, password, phone, firstName, lastName, gender } = req.body;
     const user = await authService.registerSuperAdmin(
-      email, password, phone, firstName, lastName, gender
+      email,
+      password,
+      phone,
+      firstName,
+      lastName,
+      gender
     );
-    res.status(201).json({ success: true, message: "SuperAdmin created", user });
+    res
+      .status(201)
+      .json({ success: true, message: "SuperAdmin created", user });
   } catch (err) {
     res.status(400).json({ success: false, message: err.message });
   }
@@ -59,23 +77,61 @@ export const signUpSuperAdmin = async (req, res) => {
 // Sends a verification email immediately after creating tokens.
 export const signUpClient = async (req, res) => {
   try {
-    const { email, password, phone, firstName, lastName, gender } = req.body;
+    let { email, password, phone, firstName, lastName, gender } = req.body;
     if (!email || !password || !firstName || !lastName || !phone || !gender) {
-      return res.status(400).json({ success: false, message: "Missing required fields" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing required fields" });
     }
 
-    const user = new User({ email, firstName, lastName, phone, gender, role: "Client", isVerified: false });
+    // Normalize
+    email = authService.normalizeEmail(email);
+    phone = authService.normalizePhone(phone);
+
+    // Check duplicates across email/phone
+    const clash = await User.findOne({
+      $or: [{ email }, { phone }],
+    }).lean();
+
+    if (clash) {
+      let message;
+      if (clash.email === email && clash.phone === phone) {
+        message = "User with this email and phone already exists";
+      } else if (clash.email === email) {
+        message = "User with this email already exists";
+      } else {
+        message = "User with this phone already exists";
+      }
+      return res.status(400).json({ success: false, message });
+    }
+
+    const user = new User({
+      email,
+      firstName,
+      lastName,
+      phone,
+      gender,
+      role: "Client",
+      isVerified: false,
+    });
     await User.register(user, password);
 
     const { accessToken, refreshToken } = await authService.createTokens(user);
     setRefreshCookie(res, refreshToken);
 
     // Send verification email ONCE here (auto-picks dev/prod from req)
-    let expiresInHours = null;
+    let expiresInMinutes = null;
     try {
       const out = await createAndSendVerifyEmail(user, req);
-      expiresInHours = out?.expiresInHours ?? null;
-    } catch { /* swallow */ }
+      expiresInMinutes = out?.expiresInMinutes ?? null;
+    } catch {
+      /* swallow – user can always request a new code */
+    }
+
+    const expiresInHours =
+      typeof expiresInMinutes === "number"
+        ? expiresInMinutes / 60
+        : null;
 
     return res.status(201).json({
       success: true,
@@ -90,7 +146,12 @@ export const signUpClient = async (req, res) => {
         role: user.role,
         isVerified: !!user.isVerified,
       },
-      verification: { sent: true, expiresInHours },
+      // expose both for frontend compatibility
+      verification: {
+        sent: true,
+        expiresInMinutes,
+        expiresInHours,
+      },
     });
   } catch (err) {
     res.status(400).json({ success: false, message: err.message });
@@ -103,11 +164,31 @@ export const addUser = async (req, res) => {
 
     let user;
     if (req.user.role === "SuperAdmin") {
-      user = await authService.addUserBySuperAdmin(email, role, phone, firstName, lastName, gender);
+      user = await authService.addUserBySuperAdmin(
+        email,
+        role,
+        phone,
+        firstName,
+        lastName,
+        gender
+      );
     } else if (req.user.role === "Admin") {
-      user = await userService.adminAddStaff({ creator: req.user, email, role, phone, firstName, lastName, gender }, fromReq(req));
+      user = await userService.adminAddStaff(
+        {
+          creator: req.user,
+          email,
+          role,
+          phone,
+          firstName,
+          lastName,
+          gender,
+        },
+        fromReq(req)
+      );
     } else {
-      return res.status(403).json({ success: false, message: "Forbidden" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Forbidden" });
     }
 
     res.status(201).json({ success: true, message: "User added", user });
@@ -147,7 +228,8 @@ export const refreshToken = async (req, res) => {
     const token = req.cookies.refreshToken;
     if (!token) throw new Error("No refresh token provided");
 
-    const { accessToken, refreshToken } = await authService.refreshAccessToken(token);
+    const { accessToken, refreshToken } =
+      await authService.refreshAccessToken(token);
     setRefreshCookie(res, refreshToken);
     res.json({ success: true, accessToken });
   } catch (err) {
@@ -160,27 +242,37 @@ export const logout = async (req, res) => {
     try {
       const id = userIdFromToken
         ? String(userIdFromToken)
-        : (req.user?._id || req.user?.id ? String(req.user._id || req.user.id) : null);
+        : req.user?._id || req.user?.id
+        ? String(req.user._id || req.user.id)
+        : null;
 
       if (id) {
         await User.updateOne(
           { _id: id },
-          { $set: { online: false, lastActive: new Date(0) }, $inc: { tokenVersion: 1 } }
+          {
+            $set: { online: false, lastActive: new Date(0) },
+            $inc: { tokenVersion: 1 },
+          }
         );
 
         const io = getIO();
         if (io) {
           const ns = io.of("/");
           for (const [, sock] of ns.sockets) {
-            const sockUid = sock.handshake?.auth?.userId || sock.handshake?.query?.userId;
+            const sockUid =
+              sock.handshake?.auth?.userId || sock.handshake?.query?.userId;
             if (String(sockUid || "") === id) {
-              try { sock.disconnect(true); } catch {}
+              try {
+                sock.disconnect(true);
+              } catch {}
             }
           }
         }
 
         try {
-          const projectService = await import("../services/project.service.js");
+          const projectService = await import(
+            "../services/project.service.js"
+          );
           await projectService.autoAssignFromStandby();
         } catch {}
       }
@@ -208,7 +300,10 @@ export const logout = async (req, res) => {
 
     if (typeof req.logout === "function") {
       return req.logout(async (err) => {
-        if (err) return res.status(500).json({ success: false, message: err.message });
+        if (err)
+          return res
+            .status(500)
+            .json({ success: false, message: err.message });
         if (req.session && typeof req.session.destroy === "function") {
           req.session.destroy(async () => {
             res.clearCookie("connect.sid", {
@@ -218,11 +313,17 @@ export const logout = async (req, res) => {
               secure: config.env === "production",
             });
             await doFinish(userIdFromToken);
-            return res.json({ success: true, message: "Logged out successfully" });
+            return res.json({
+              success: true,
+              message: "Logged out successfully",
+            });
           });
         } else {
           await doFinish(userIdFromToken);
-          return res.json({ success: true, message: "Logged out successfully" });
+          return res.json({
+            success: true,
+            message: "Logged out successfully",
+          });
         }
       });
     }
@@ -236,11 +337,17 @@ export const logout = async (req, res) => {
           secure: config.env === "production",
         });
         await doFinish(userIdFromToken);
-        return res.json({ success: true, message: "Logged out successfully" });
+        return res.json({
+          success: true,
+          message: "Logged out successfully",
+        });
       });
     } else {
       await doFinish(userIdFromToken);
-      return res.json({ success: true, message: "Logged out successfully" });
+      return res.json({
+        success: true,
+        message: "Logged out successfully",
+      });
     }
   } catch (err) {
     res.status(400).json({ success: false, message: err.message });
@@ -248,8 +355,8 @@ export const logout = async (req, res) => {
 };
 
 // ---------- Email verification endpoints ----------
+
 export async function resendVerifyEmail(req, res) {
-  // We’ll reuse sendVerifyEmail (same throttling). If you want a different policy, you can add a `force` flag in the service.
   return sendVerifyEmail(req, res);
 }
 
@@ -257,28 +364,64 @@ export async function sendVerifyEmail(req, res) {
   try {
     const userId = req.user?._id || req.user?.id || req.userId;
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
-    if (user.isVerified) return res.json({ success: true, message: "Already verified" });
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    if (user.isVerified)
+      return res.json({ success: true, message: "Already verified" });
 
-    // Auto-pick dev/prod link based on req (Origin/Referer)
     const out = await createAndSendVerifyEmail(user, req);
-    res.json({ success: true, message: "Verification email sent", expiresInHours: out?.expiresInHours ?? null });
+    const expiresInMinutes = out?.expiresInMinutes ?? null;
+    const expiresInHours =
+      typeof expiresInMinutes === "number"
+        ? expiresInMinutes / 60
+        : null;
+
+    res.json({
+      success: true,
+      message: "Verification code sent",
+      expiresInMinutes,
+      expiresInHours,
+    });
   } catch (e) {
     if (e?.code === "THROTTLED") {
-      return res.status(429).json({ success: false, message: e.message, retryAfterSec: e.retryAfterSec });
+      return res.status(429).json({
+        success: false,
+        message: e.message,
+        retryAfterSec: e.retryAfterSec,
+      });
     }
-    res.status(500).json({ success: false, message: e.message || "Failed to send verification" });
+    res.status(500).json({
+      success: false,
+      message: e.message || "Failed to send verification code",
+    });
   }
 }
 
 export async function consumeVerify(req, res) {
   try {
-    const { token } = req.body || {};
-    if (!token) return res.status(400).json({ success: false, message: "Token required" });
-    const user = await consumeVerifyToken(token);
-    res.json({ success: true, email: user.email });
+    // 🔑 Accept both `code` and `otp` for safety
+    const { email, code, otp } = req.body || {};
+    const finalEmail = String(email || "").toLowerCase().trim();
+    const finalCode = String(code || otp || "").trim();
+
+    if (!finalEmail || !finalCode) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and code are required",
+      });
+    }
+
+    // verify.service.js signature: consumeVerifyToken(code, email)
+    const user = await consumeVerifyToken(finalCode, finalEmail);
+
+    return res.json({ success: true, email: user.email });
   } catch (e) {
-    res.status(400).json({ success: false, message: e.message || "Verification failed" });
+    return res.status(400).json({
+      success: false,
+      message: e.message || "Verification failed",
+    });
   }
 }
 
@@ -286,7 +429,10 @@ export async function verifyStatus(req, res) {
   try {
     const email = String(req.query.email || "").toLowerCase().trim();
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ success: false, message: "Not found" });
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "Not found" });
     res.json({ success: true, isVerified: !!user.isVerified });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });

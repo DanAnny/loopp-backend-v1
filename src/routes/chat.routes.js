@@ -11,6 +11,7 @@ import {
   myClientRooms,
   getClientRoomMessages,
   clientRoomSend,
+  sendRatingPrompt
 } from "../controllers/chat.controller.js";
 
 const router = express.Router();
@@ -20,6 +21,8 @@ router.post("/send", requireAuth, upload.array("files", 6), sendMessage);
 router.get("/:roomId/messages", requireAuth, getMessages);
 router.get("/my-rooms", requireAuth, myRooms);
 router.get("/room/key/:key", requireAuth, getRoomByKey);
+
+router.post("/rooms/:roomId/rating-prompt", requireAuth, sendRatingPrompt );
 
 /* ---------- Public client-key endpoints (key in query/body) ---------- */
 router.post("/client/send", upload.array("files", 6), clientSendMessage);

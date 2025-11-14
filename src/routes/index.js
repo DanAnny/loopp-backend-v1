@@ -11,6 +11,7 @@ import notificationRoutes from "./notification.routes.js";
 import integrationsRoutes from "./integrations.routes.js";
 import devmail from "./dev-mail.js";
 import meetingsRoutes from "./meetings.routes.js";
+import googleRoutes from "./google.routes.js";           // ✅ NEW
 
 const router = express.Router();
 
@@ -25,6 +26,7 @@ router.use("/files", fileRoutes);
 router.use("/management", managementRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/integrations", integrationsRoutes);
+router.use("/google", googleRoutes);                     // ✅ NEW
 router.use(devmail);
 
 export default router;

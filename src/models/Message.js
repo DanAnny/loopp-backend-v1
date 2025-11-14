@@ -25,6 +25,8 @@ const MessageSchema = new mongoose.Schema(
 
     visibleTo: { type: String, enum: ["All", "Client", "Staff"], default: "All" },
     kind: { type: String, default: null },
+    allowRating: { type: Boolean, default: false },
+    meta: { type: Object, default: {} },  
   },
   { timestamps: true }
 );

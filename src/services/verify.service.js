@@ -1,101 +1,124 @@
-import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import { config } from "../config/env.js";
 import { User } from "../models/User.js";
 import { emailSendVerification } from "./email.service.js";
 
-const EMAIL_JWT_SECRET = config?.jwtEmailSecret || (config?.jwtSecret + ".email");
-const EXPIRES_HOURS    = Number(config?.emailVerifyHours || 24);
+const OTP_TTL_MIN = 2; // 2 minutes
+const OTP_TTL_MS = OTP_TTL_MIN * 60 * 1000;
 
-function getProdOrigin() {
-  return process.env.FRONTEND_ORIGIN?.trim()
-      || config?.frontendUrl
-      || "https://loopp-frontend-v1.vercel.app";
-}
-function getDevOrigin() {
-  return process.env.FRONTEND_ORIGIN_DEV?.trim() || "http://localhost:5173";
-}
-
-/** Choose the best frontend origin:
- *  - If the incoming request has Origin/Referer pointing at localhost:5173 → use DEV
- *  - Else → use PROD
- */
-function pickFrontendOriginFromReq(req) {
-  const origin = (req?.get("origin") || req?.headers?.origin || "").toLowerCase();
-  const referer = (req?.get("referer") || req?.headers?.referer || "").toLowerCase();
-
-  const looksLocal =
-    origin.includes("localhost:5173") ||
-    referer.includes("localhost:5173");
-
-  return looksLocal ? getDevOrigin() : getProdOrigin();
-}
-
-function buildVerifyUrl(frontendOrigin, token, email) {
-  const base = String(frontendOrigin || getProdOrigin());
-  const url = new URL(base.includes("http") ? base : `https://${base}`);
-  url.pathname = "/verify-email";
-  url.searchParams.set("token", token);
-  if (email) url.searchParams.set("email", String(email).toLowerCase());
-  return url.toString();
+function hashOtp(code) {
+  return crypto.createHash("sha256").update(String(code)).digest("hex");
 }
 
 async function throttleOrMark(userId, windowSec = 60) {
   const now = Date.now();
-  const user = await User.findById(userId).select("lastVerifyEmailAt firstName email").lean();
+  const user = await User.findById(userId).select(
+    "lastVerifyEmailAt firstName email"
+  ).lean();
   if (!user) throw new Error("User not found");
-  const last = user.lastVerifyEmailAt ? new Date(user.lastVerifyEmailAt).getTime() : 0;
+
+  const last = user.lastVerifyEmailAt
+    ? new Date(user.lastVerifyEmailAt).getTime()
+    : 0;
   const diffSec = Math.floor((now - last) / 1000);
+
   if (diffSec < windowSec) {
     const retryAfterSec = windowSec - diffSec;
-    const err = new Error(`Please wait ${retryAfterSec}s before requesting another email`);
+    const err = new Error(
+      `Please wait ${retryAfterSec}s before requesting another code`
+    );
     err.code = "THROTTLED";
     err.retryAfterSec = retryAfterSec;
     throw err;
   }
-  await User.updateOne({ _id: userId }, { $set: { lastVerifyEmailAt: new Date() } }).catch(() => {});
+
+  await User.updateOne(
+    { _id: userId },
+    { $set: { lastVerifyEmailAt: new Date() } }
+  ).catch(() => {});
   return { email: user.email, firstName: user.firstName || "" };
 }
 
-/** Accept req to auto-pick dev/prod origin. */
+/**
+ * Generates a 6-digit OTP, stores its hash + 2-minute expiry on the user,
+ * and emails the code.
+ */
 export async function createAndSendVerifyEmail(userDoc, req) {
   const { email, firstName } = await throttleOrMark(userDoc._id, 60);
 
-  const token = jwt.sign(
-    { uid: String(userDoc._id), email, t: "email-verify" },
-    EMAIL_JWT_SECRET,
-    { expiresIn: `${EXPIRES_HOURS}h` }
+  // 6-digit code
+  const code = (Math.floor(100000 + Math.random() * 900000)).toString();
+
+  const otpHash = hashOtp(code);
+  const expiresAt = new Date(Date.now() + OTP_TTL_MS);
+
+  await User.updateOne(
+    { _id: userDoc._id },
+    {
+      $set: {
+        emailVerifyOtpHash: otpHash,
+        emailVerifyOtpExpiresAt: expiresAt,
+      },
+    }
   );
 
-  const frontendOrigin = pickFrontendOriginFromReq(req);
-  const verifyUrl = buildVerifyUrl(frontendOrigin, token, email);
+  await emailSendVerification({
+    to: email,
+    firstName,
+    code,
+    expiresInMinutes: OTP_TTL_MIN,
+  });
 
-  await emailSendVerification({ to: email, firstName, verifyUrl });
-  return { expiresInHours: EXPIRES_HOURS, verifyUrl };
+  return { expiresInMinutes: OTP_TTL_MIN };
 }
 
-export async function consumeVerifyToken(token) {
-  let payload;
-  try {
-    payload = jwt.verify(token, EMAIL_JWT_SECRET);
-  } catch {
-    const err = new Error("Invalid or expired verification link");
-    err.code = "BAD_TOKEN";
+/**
+ * Verifies the OTP for a given email.
+ * If valid + not expired, marks user as verified and clears OTP.
+ */
+export async function consumeVerifyToken(code, email) {
+  const cleanEmail = String(email || "").toLowerCase().trim();
+  const cleanCode = String(code || "").trim();
+
+  if (!cleanEmail || !cleanCode) {
+    const err = new Error("Email and code are required");
+    err.code = "MISSING";
     throw err;
   }
-  if (!payload?.uid || payload?.t !== "email-verify") {
-    const err = new Error("Invalid token payload");
-    err.code = "BAD_PAYLOAD";
-    throw err;
-  }
-  const user = await User.findById(payload.uid);
+
+  const user = await User.findOne({ email: cleanEmail });
   if (!user) {
     const err = new Error("User not found");
     err.code = "NO_USER";
     throw err;
   }
-  if (!user.isVerified) {
-    user.isVerified = true;
-    await user.save();
+
+  if (!user.emailVerifyOtpHash || !user.emailVerifyOtpExpiresAt) {
+    const err = new Error("No active verification code. Please request a new one.");
+    err.code = "NO_OTP";
+    throw err;
   }
+
+  const now = Date.now();
+  const exp = new Date(user.emailVerifyOtpExpiresAt).getTime();
+  if (exp < now) {
+    const err = new Error("Verification code has expired");
+    err.code = "EXPIRED";
+    throw err;
+  }
+
+  const incomingHash = hashOtp(cleanCode);
+  if (incomingHash !== user.emailVerifyOtpHash) {
+    const err = new Error("Invalid verification code");
+    err.code = "BAD_CODE";
+    throw err;
+  }
+
+  // Mark verified + clear OTP
+  user.isVerified = true;
+  user.emailVerifyOtpHash = undefined;
+  user.emailVerifyOtpExpiresAt = undefined;
+  await user.save();
+
   return user;
 }

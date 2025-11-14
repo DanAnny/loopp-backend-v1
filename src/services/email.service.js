@@ -55,7 +55,9 @@ async function buildTransport() {
     const secure = String(forcedPort) === "465";
     try {
       const t = await makeTransportTry(forcedPort, secure);
-      console.log(`[mailer] ✅ SMTP verified on ${forcedPort} (${secure ? "implicit TLS" : "STARTTLS"})`);
+      console.log(
+        `[mailer] ✅ SMTP verified on ${forcedPort} (${secure ? "implicit TLS" : "STARTTLS"})`
+      );
       return t;
     } catch (e) {
       console.warn(`[mailer] ❗ verify failed on ${forcedPort}:`, e?.message);
@@ -109,7 +111,11 @@ async function safeSend({ to, bcc, subject, html, text }) {
     bcc,
     subject,
     text: text || stripHtml(html || ""),
-    html: html || (text ? `<pre style="font-family:monospace">${escapeHtml(text)}</pre>` : "<p>(no content)</p>"),
+    html:
+      html ||
+      (text
+        ? `<pre style="font-family:monospace">${escapeHtml(text)}</pre>`
+        : "<p>(no content)</p>"),
   };
 
   try {
@@ -154,7 +160,9 @@ function button(label, href) {
 /** 2-line section title + paragraph + CTA button */
 function ctaBlock(heading, text, ctaLabel, ctaHref) {
   return `
-    <h3 style="margin:20px 0 6px 0;font-size:16px;line-height:1.35;color:${TEXT}">${escapeHtml(heading)}</h3>
+    <h3 style="margin:20px 0 6px 0;font-size:16px;line-height:1.35;color:${TEXT}">${escapeHtml(
+      heading
+    )}</h3>
     <p style="margin:0 0 10px 0;color:${MUTED}">
       ${escapeHtml(text)}
     </p>
@@ -171,10 +179,14 @@ function wrapHtml(inner, title = "Loopp", headerImgUrl = null) {
     const isClientGif = /Loop_gif\.gif$/i.test(headerImgUrl);
     headerImg = isClientGif
       ? `<div style="text-align:center;margin:0 0 16px 0">
-           <img src="${escapeHtml(headerImgUrl)}" alt="Loopp" style="width:100%;max-width:100%;height:auto;border-radius:12px;display:block" />
+           <img src="${escapeHtml(
+             headerImgUrl
+           )}" alt="Loopp" style="width:100%;max-width:100%;height:auto;border-radius:12px;display:block" />
          </div>`
       : `<div style="text-align:left;margin:0 0 16px 0">
-           <img src="${escapeHtml(headerImgUrl)}" alt="Loopp" style="max-width:180px;height:auto;display:inline-block;border-radius:10px" />
+           <img src="${escapeHtml(
+             headerImgUrl
+           )}" alt="Loopp" style="max-width:180px;height:auto;display:inline-block;border-radius:10px" />
          </div>`;
   }
 
@@ -208,8 +220,12 @@ function keyval(label, value) {
   const show = value != null && String(value).trim() !== "";
   if (!show) return "";
   return `<tr>
-    <td style="padding:10px 12px;border-bottom:1px solid ${BORDER};color:#bfbfbf;white-space:nowrap">${escapeHtml(label)}</td>
-    <td style="padding:10px 12px;border-bottom:1px solid ${BORDER};color:${TEXT}">${escapeHtml(value)}</td>
+    <td style="padding:10px 12px;border-bottom:1px solid ${BORDER};color:#bfbfbf;white-space:nowrap">${escapeHtml(
+      label
+    )}</td>
+    <td style="padding:10px 12px;border-bottom:1px solid ${BORDER};color:${TEXT}">${escapeHtml(
+      value
+    )}</td>
   </tr>`;
 }
 
@@ -225,7 +241,13 @@ function stripHtml(s = "") {
   return s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 function escapeHtml(s = "") {
-  return s.replace(/[&<>'"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;" }[c]));
+  return s.replace(/[&<>'"]/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#39;",
+    '"': "&quot;",
+  }[c]));
 }
 
 /* ============================================================================
@@ -253,7 +275,8 @@ function clientNewRequestSubject(req) {
 }
 function clientNewRequestHtml(req, pmName, engineerName) {
   const title = req?.projectTitle || "your project";
-  const name  = `${req?.firstName || ""} ${req?.lastName || ""}`.trim() || "there";
+  const name =
+    `${req?.firstName || ""} ${req?.lastName || ""}`.trim() || "there";
 
   const inner = `
     <h1 style="margin:8px 0 10px 0;font-size:28px;line-height:1.25;color:${TEXT};font-weight:800">
@@ -261,7 +284,9 @@ function clientNewRequestHtml(req, pmName, engineerName) {
     </h1>
     ${button("Get started with Loopp", CLIENT_CHAT_URL)}
 
-    <p style="margin:18px 0 0;color:${TEXT};font-weight:700">Hey ${escapeHtml(name)},</p>
+    <p style="margin:18px 0 0;color:${TEXT};font-weight:700">Hey ${escapeHtml(
+      name
+    )},</p>
     <p style="margin:0 0 10px 0;color:${MUTED}">
       Thanks for sharing your project with us! We’ve got your details and we’re already thinking about how to make it happen.
     </p>
@@ -269,8 +294,8 @@ function clientNewRequestHtml(req, pmName, engineerName) {
     <p style="margin:14px 0 6px 0;color:${TEXT};font-weight:700">Here’s what we’re seeing:</p>
     ${detailsTable(
       keyval("Project", title) +
-      keyval("Project Manager", pmName || "Assigning now") +
-      keyval("Engineer", engineerName || "Pending")
+        keyval("Project Manager", pmName || "Assigning now") +
+        keyval("Engineer", engineerName || "Pending")
     )}
 
     <p style="margin:16px 0 0;color:${MUTED}">
@@ -308,10 +333,13 @@ function adminsNewRequestHtml_NoPM(req, pmName, engineerName) {
       No PM assigned yet — please ensure a PM reaches out to the client immediately and confirms ownership.
     </p>
     ${detailsTable(
-      keyval("Client", `${(req?.firstName || "")} ${(req?.lastName || "")} (${req?.email || "n/a"})`) +
-      keyval("Project", req?.projectTitle || "Untitled") +
-      keyval("Project Manager", pmName || "Unassigned") +
-      keyval("Engineer", engineerName || "Pending")
+      keyval(
+        "Client",
+        `${req?.firstName || ""} ${req?.lastName || ""} (${req?.email || "n/a"})`
+      ) +
+        keyval("Project", req?.projectTitle || "Untitled") +
+        keyval("Project Manager", pmName || "Unassigned") +
+        keyval("Engineer", engineerName || "Pending")
     )}
   `;
   return wrapHtml(inner, "New request", STAFF_LOGO);
@@ -329,10 +357,13 @@ function adminsAssignedHtml(req, pmName, engineerName) {
       A Project Manager has been assigned. Track onboarding and ensure the first milestone is set in chat.
     </p>
     ${detailsTable(
-      keyval("Client", `${(req?.firstName || "")} ${(req?.lastName || "")} (${req?.email || "n/a"})`) +
-      keyval("Project", req?.projectTitle || "Project") +
-      keyval("Project Manager", pmName || "PM") +
-      keyval("Engineer", engineerName || "Pending")
+      keyval(
+        "Client",
+        `${req?.firstName || ""} ${req?.lastName || ""} (${req?.email || "n/a"})`
+      ) +
+        keyval("Project", req?.projectTitle || "Project") +
+        keyval("Project Manager", pmName || "PM") +
+        keyval("Engineer", engineerName || "Pending")
     )}
   `;
   return wrapHtml(inner, "PM assigned", STAFF_LOGO);
@@ -349,10 +380,13 @@ function pmsBroadcastHtml(req, pmName, engineerName) {
       <strong>Please log in and take ownership immediately</strong> — a project request is pending ownership.
     </p>
     ${detailsTable(
-      keyval("Client", `${(req?.firstName || "")} ${(req?.lastName || "")}`.trim()) +
-      keyval("Email", req?.email || "n/a") +
-      keyval("Project Manager", pmName || "Not assigned yet") +
-      keyval("Engineer", engineerName || "Pending")
+      keyval(
+        "Client",
+        `${req?.firstName || ""} ${req?.lastName || ""}`.trim()
+      ) +
+        keyval("Email", req?.email || "n/a") +
+        keyval("Project Manager", pmName || "Not assigned yet") +
+        keyval("Engineer", engineerName || "Pending")
     )}
     ${button("Open Chat", STAFF_CHAT_URL)}
   `;
@@ -371,9 +405,12 @@ function pmsAssignedHtml(req, pmName, engineerName) {
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Client", `${(req?.firstName || "")} ${(req?.lastName || "")}`.trim()) +
-      keyval("Project Manager", pmName || "PM") +
-      keyval("Engineer", engineerName || "Pending")
+        keyval(
+          "Client",
+          `${req?.firstName || ""} ${req?.lastName || ""}`.trim()
+        ) +
+        keyval("Project Manager", pmName || "PM") +
+        keyval("Engineer", engineerName || "Pending")
     )}
     ${button("Open Chat", STAFF_CHAT_URL)}
   `;
@@ -394,7 +431,7 @@ function clientThankYouHtml(req, pmName, engineerName) {
     </p>
     ${detailsTable(
       keyval("Project Manager", pmName || "PM") +
-      keyval("Engineer", engineerName || "Engineer")
+        keyval("Engineer", engineerName || "Engineer")
     )}
     ${button("Open Chat", CLIENT_CHAT_URL)}
 
@@ -420,13 +457,21 @@ function clientEngineerAcceptedHtml(req, engineerName, pmName) {
   const inner = `
     <h1 style="margin:0 0 10px 0;font-size:26px;color:${TEXT}">Your engineer is confirmed</h1>
     <p style="margin:0 0 10px 0;color:${MUTED}">
-      Great news — <strong>${escapeHtml(engineerName || "your engineer")}</strong> has accepted the assignment.
-      ${pmName ? `Your Project Manager, <strong>${escapeHtml(pmName)}</strong>, will coordinate everything and keep you updated in the chat.` : "Your Project Manager will coordinate everything and keep you updated in the chat."}
+      Great news — <strong>${escapeHtml(
+        engineerName || "your engineer"
+      )}</strong> has accepted the assignment.
+      ${
+        pmName
+          ? `Your Project Manager, <strong>${escapeHtml(
+              pmName
+            )}</strong>, will coordinate everything and keep you updated in the chat.`
+          : "Your Project Manager will coordinate everything and keep you updated in the chat."
+      }
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Project Manager", pmName || "") +
-      keyval("Engineer", engineerName || "")
+        keyval("Project Manager", pmName || "") +
+        keyval("Engineer", engineerName || "")
     )}
     ${button("Say hello in chat", CLIENT_CHAT_URL)}
   `;
@@ -434,19 +479,23 @@ function clientEngineerAcceptedHtml(req, engineerName, pmName) {
 }
 
 function pmsEngineerAcceptedSubject(req, engineerName) {
-  return `Engineer confirmed: ${engineerName || "Engineer"} — ${req?.projectTitle || "Project"}`;
+  return `Engineer confirmed: ${
+    engineerName || "Engineer"
+  } — ${req?.projectTitle || "Project"}`;
 }
 function pmsEngineerAcceptedHtml(req, engineerName, pmName) {
   const inner = `
     <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">Engineer Confirmed</h1>
     <p style="margin:0 0 10px 0;color:${MUTED}">
-      <strong>${escapeHtml(engineerName || "Engineer")}</strong> accepted this project${pmName ? ` (PM: ${escapeHtml(pmName)})` : ""}.
+      <strong>${escapeHtml(engineerName || "Engineer")}</strong> accepted this project${
+    pmName ? ` (PM: ${escapeHtml(pmName)})` : ""
+  }.
       Align on scope, milestones, and comms cadence in the chat.
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Project Manager", pmName || "") +
-      keyval("Engineer", engineerName || "")
+        keyval("Project Manager", pmName || "") +
+        keyval("Engineer", engineerName || "")
     )}
     ${button("Open Chat", STAFF_CHAT_URL)}
   `;
@@ -454,7 +503,9 @@ function pmsEngineerAcceptedHtml(req, engineerName, pmName) {
 }
 
 function adminsEngineerAcceptedSubject(req, engineerName) {
-  return `Engineer accepted: ${req?.projectTitle || "Project"} — ${engineerName || "Engineer"}`;
+  return `Engineer accepted: ${req?.projectTitle || "Project"} — ${
+    engineerName || "Engineer"
+  }`;
 }
 function adminsEngineerAcceptedHtml(req, engineerName, pmName) {
   const inner = `
@@ -464,9 +515,9 @@ function adminsEngineerAcceptedHtml(req, engineerName, pmName) {
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Project Manager", pmName || "") +
-      keyval("Engineer", engineerName || "") +
-      keyval("Status", "In progress — Engineer confirmed")
+        keyval("Project Manager", pmName || "") +
+        keyval("Engineer", engineerName || "") +
+        keyval("Status", "In progress — Engineer confirmed")
     )}
   `;
   return wrapHtml(inner, "Engineer accepted", STAFF_LOGO);
@@ -485,13 +536,15 @@ function clientEngineerInRoomHtml(req, engineerName, pmName) {
       ${escapeHtml(engineerName || "Your engineer")} is here 👋
     </h1>
     <p style="margin:0 0 10px 0;color:${MUTED}">
-      Your engineer has joined the chat${pmName ? ` alongside <strong>${escapeHtml(pmName)}</strong>` : ""}. 
+      Your engineer has joined the chat${
+        pmName ? ` alongside <strong>${escapeHtml(pmName)}</strong>` : ""
+      }. 
       Share any files, links, or notes to kick things off.
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Project Manager", pmName || "") +
-      keyval("Engineer", engineerName || "")
+        keyval("Project Manager", pmName || "") +
+        keyval("Engineer", engineerName || "")
     )}
     ${button("Open Chat", CLIENT_CHAT_URL)}
   `;
@@ -499,19 +552,23 @@ function clientEngineerInRoomHtml(req, engineerName, pmName) {
 }
 
 function pmsEngineerInRoomSubject(req, engineerName) {
-  return `Engineer joined room: ${engineerName || "Engineer"} — ${req?.projectTitle || "Project"}`;
+  return `Engineer joined room: ${engineerName || "Engineer"} — ${
+    req?.projectTitle || "Project"
+  }`;
 }
 function pmsEngineerInRoomHtml(req, engineerName, pmName) {
   const inner = `
     <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">Engineer in the Room</h1>
     <p style="margin:0 0 10px 0;color:${MUTED}">
-      <strong>${escapeHtml(engineerName || "Engineer")}</strong> is now in the chat${pmName ? ` (PM: ${escapeHtml(pmName)})` : ""}.
+      <strong>${escapeHtml(engineerName || "Engineer")}</strong> is now in the chat${
+    pmName ? ` (PM: ${escapeHtml(pmName)})` : ""
+  }.
       Start Day-0 checklist: context, access, scope confirmation, timeline, and first deliverable.
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Project Manager", pmName || "") +
-      keyval("Engineer", engineerName || "")
+        keyval("Project Manager", pmName || "") +
+        keyval("Engineer", engineerName || "")
     )}
     ${button("Open Chat", STAFF_CHAT_URL)}
   `;
@@ -519,7 +576,9 @@ function pmsEngineerInRoomHtml(req, engineerName, pmName) {
 }
 
 function adminsEngineerInRoomSubject(req, engineerName) {
-  return `Engineer joined: ${req?.projectTitle || "Project"} — ${engineerName || "Engineer"}`;
+  return `Engineer joined: ${req?.projectTitle || "Project"} — ${
+    engineerName || "Engineer"
+  }`;
 }
 function adminsEngineerInRoomHtml(req, engineerName, pmName) {
   const inner = `
@@ -529,9 +588,9 @@ function adminsEngineerInRoomHtml(req, engineerName, pmName) {
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Project Manager", pmName || "") +
-      keyval("Engineer", engineerName || "") +
-      keyval("Status", "Active — Delivery started")
+        keyval("Project Manager", pmName || "") +
+        keyval("Engineer", engineerName || "") +
+        keyval("Status", "Active — Delivery started")
     )}
   `;
   return wrapHtml(inner, "Engineer joined", STAFF_LOGO);
@@ -558,9 +617,12 @@ function staffProjectCompletedHtml(req, pmName, engineerName) {
     </ul>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Client", `${(req?.firstName || "")} ${(req?.lastName || "")}`.trim()) +
-      keyval("Project Manager", pmName || "") +
-      keyval("Engineer", engineerName || "")
+        keyval(
+          "Client",
+          `${req?.firstName || ""} ${req?.lastName || ""}`.trim()
+        ) +
+        keyval("Project Manager", pmName || "") +
+        keyval("Engineer", engineerName || "")
     )}
     ${button("Open Chat", STAFF_CHAT_URL)}
   `;
@@ -579,13 +641,21 @@ function clientEngineerAssignedHtml(req, engineerName, pmName) {
   const inner = `
     <h1 style="margin:0 0 10px 0;font-size:26px;color:${TEXT}">Your engineer is assigned</h1>
     <p style="margin:0 0 10px 0;color:${MUTED}">
-      We’ve assigned <strong>${escapeHtml(engineerName || "your engineer")}</strong> to your project.
-      ${pmName ? `Your Project Manager, <strong>${escapeHtml(pmName)}</strong>, will coordinate delivery and keep you updated in the chat.` : "Your Project Manager will coordinate delivery and keep you updated in the chat."}
+      We’ve assigned <strong>${escapeHtml(
+        engineerName || "your engineer"
+      )}</strong> to your project.
+      ${
+        pmName
+          ? `Your Project Manager, <strong>${escapeHtml(
+              pmName
+            )}</strong>, will coordinate delivery and keep you updated in the chat.`
+          : "Your Project Manager will coordinate delivery and keep you updated in the chat."
+      }
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Project Manager", pmName || "") +
-      keyval("Engineer", engineerName || "")
+        keyval("Project Manager", pmName || "") +
+        keyval("Engineer", engineerName || "")
     )}
     ${button("Open chat", CLIENT_CHAT_URL)}
   `;
@@ -593,42 +663,52 @@ function clientEngineerAssignedHtml(req, engineerName, pmName) {
 }
 
 /* ============================================================================
- * NEW: Email Verification (re-uses the dark template)
+ * NEW: Email Verification (OTP – re-uses the dark template)
  * ========================================================================== */
 
 function verifySubject() {
-  return "Verify your email — Loopp";
+  return "Your Loopp verification code";
 }
-function verifyHtml({ firstName, verifyUrl }) {
+function verifyHtml({ firstName, code, expiresInMinutes }) {
+  const name = firstName ? `Hi <strong>${escapeHtml(firstName)}</strong>,` : "Hi,";
+  const mins = expiresInMinutes || 2;
+
   const inner = `
     <h1 style="margin:0 0 10px 0;font-size:26px;color:${TEXT}">Verify your email</h1>
     <p style="margin:0 0 12px 0;color:${MUTED}">
-      ${firstName ? `Hello <strong>${escapeHtml(firstName)}</strong>,` : "Hello,"} please confirm your email to continue.
+      ${name} enter this 6-digit code in Loopp to confirm your email.
     </p>
-    ${button("Verify Email", verifyUrl)}
-    <p style="margin:12px 0 0;color:${MUTED}">Or paste this link into your browser:</p>
-    <p style="margin:6px 0 0;color:#9ca3af;word-break:break-all">${escapeHtml(verifyUrl)}</p>
-    <p style="margin:16px 0 0;color:${MUTED}">This link expires in 24 hours.</p>
+    <p style="margin:18px 0 14px 0;color:${TEXT};font-size:28px;letter-spacing:0.35em;font-weight:700;text-align:center;">
+      ${escapeHtml(code || "")}
+    </p>
+    <p style="margin:0 0 8px 0;color:${MUTED};font-size:14px;">
+      This code expires in <strong>${mins} minute${mins === 1 ? "" : "s"}</strong>.
+    </p>
+    <p style="margin:8px 0 0;color:${MUTED};font-size:13px;">
+      If you didn’t try to sign up or log in, you can safely ignore this email.
+    </p>
   `;
   return wrapHtml(inner, "Verify your email", CLIENT_GIF);
 }
 
 /**
- * Public API — Send verification email
- * @param {{to:string, firstName?:string, verifyUrl:string}} opts
+ * Public API — Send verification OTP email
+ * @param {{to:string, firstName?:string, code:string, expiresInMinutes?:number}} opts
  */
 export async function emailSendVerification(opts = {}) {
-  const { to, firstName = "", verifyUrl } = opts;
-  if (!to || !verifyUrl) return { skipped: true, reason: "missing to/verifyUrl" };
+  const { to, firstName = "", code, expiresInMinutes } = opts;
+  if (!to || !code) {
+    return { skipped: true, reason: "missing to/code" };
+  }
   return safeSend({
     to,
     subject: verifySubject(),
-    html: verifyHtml({ firstName, verifyUrl }),
+    html: verifyHtml({ firstName, code, expiresInMinutes }),
   });
 }
 
 /* ============================================================================
- * Public API
+ * PUBLIC API
  * ========================================================================== */
 
 export async function emailClientNewRequest(req, pmName, engineerName) {
@@ -641,8 +721,13 @@ export async function emailClientNewRequest(req, pmName, engineerName) {
 }
 
 // keep both names for compatibility
-export async function emailSuperAdminsNewRequest(req, superAdmins = [], pmName, engineerName) {
-  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+export async function emailSuperAdminsNewRequest(
+  req,
+  superAdmins = [],
+  pmName,
+  engineerName
+) {
+  const toList = superAdmins.map((a) => a?.email).filter(Boolean);
   if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
   return safeSend({
     to: toList,
@@ -652,8 +737,13 @@ export async function emailSuperAdminsNewRequest(req, superAdmins = [], pmName, 
 }
 export const emailSuperAdminsNewRequest_NoPM = emailSuperAdminsNewRequest;
 
-export async function emailSuperAdminsAssigned(req, pmName, superAdmins = [], engineerName) {
-  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+export async function emailSuperAdminsAssigned(
+  req,
+  pmName,
+  superAdmins = [],
+  engineerName
+) {
+  const toList = superAdmins.map((a) => a?.email).filter(Boolean);
   if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
   return safeSend({
     to: toList,
@@ -662,7 +752,12 @@ export async function emailSuperAdminsAssigned(req, pmName, superAdmins = [], en
   });
 }
 
-export async function emailPMsBroadcastNewRequest(req, pmEmails = [], pmName, engineerName) {
+export async function emailPMsBroadcastNewRequest(
+  req,
+  pmEmails = [],
+  pmName,
+  engineerName
+) {
   const list = pmEmails.filter(Boolean);
   if (!list.length) return { skipped: true, reason: "no pm emails" };
 
@@ -684,7 +779,12 @@ export async function emailPMsBroadcastNewRequest(req, pmEmails = [], pmName, en
   return results;
 }
 
-export async function emailPMsOnPmAssigned(req, pmName, pmEmails = [], engineerName) {
+export async function emailPMsOnPmAssigned(
+  req,
+  pmName,
+  pmEmails = [],
+  engineerName
+) {
   const list = pmEmails.filter(Boolean);
   if (!list.length) return { skipped: true, reason: "no pm emails" };
 
@@ -716,7 +816,11 @@ export async function emailClientThankYou(req, pmName, engineerName) {
 }
 
 /* -------- Engineer Assigned (NEW) -------- */
-export async function emailClientEngineerAssigned(req, engineerName, pmName) {
+export async function emailClientEngineerAssigned(
+  req,
+  engineerName,
+  pmName
+) {
   if (!req?.email) return { skipped: true, reason: "no client email" };
   return safeSend({
     to: req.email,
@@ -726,7 +830,11 @@ export async function emailClientEngineerAssigned(req, engineerName, pmName) {
 }
 
 /* -------- Engineer Accepted -------- */
-export async function emailClientEngineerAccepted(req, engineerName, pmName) {
+export async function emailClientEngineerAccepted(
+  req,
+  engineerName,
+  pmName
+) {
   if (!req?.email) return { skipped: true, reason: "no client email" };
   return safeSend({
     to: req.email,
@@ -735,7 +843,12 @@ export async function emailClientEngineerAccepted(req, engineerName, pmName) {
   });
 }
 
-export async function emailPMsEngineerAccepted(req, engineerName, pmName, pmEmails = []) {
+export async function emailPMsEngineerAccepted(
+  req,
+  engineerName,
+  pmName,
+  pmEmails = []
+) {
   const list = pmEmails.filter(Boolean);
   if (!list.length) return { skipped: true, reason: "no pm emails" };
 
@@ -757,8 +870,13 @@ export async function emailPMsEngineerAccepted(req, engineerName, pmName, pmEmai
   return results;
 }
 
-export async function emailSuperAdminsEngineerAccepted(req, engineerName, pmName, superAdmins = []) {
-  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+export async function emailSuperAdminsEngineerAccepted(
+  req,
+  engineerName,
+  pmName,
+  superAdmins = []
+) {
+  const toList = superAdmins.map((a) => a?.email).filter(Boolean);
   if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
   return safeSend({
     to: toList,
@@ -768,7 +886,11 @@ export async function emailSuperAdminsEngineerAccepted(req, engineerName, pmName
 }
 
 /* -------- Engineer in the Room -------- */
-export async function emailClientEngineerInRoom(req, engineerName, pmName) {
+export async function emailClientEngineerInRoom(
+  req,
+  engineerName,
+  pmName
+) {
   if (!req?.email) return { skipped: true, reason: "no client email" };
   return safeSend({
     to: req.email,
@@ -777,7 +899,12 @@ export async function emailClientEngineerInRoom(req, engineerName, pmName) {
   });
 }
 
-export async function emailPMsEngineerInRoom(req, engineerName, pmName, pmEmails = []) {
+export async function emailPMsEngineerInRoom(
+  req,
+  engineerName,
+  pmName,
+  pmEmails = []
+) {
   const list = pmEmails.filter(Boolean);
   if (!list.length) return { skipped: true, reason: "no pm emails" };
 
@@ -799,8 +926,13 @@ export async function emailPMsEngineerInRoom(req, engineerName, pmName, pmEmails
   return results;
 }
 
-export async function emailSuperAdminsEngineerInRoom(req, engineerName, pmName, superAdmins = []) {
-  const toList = superAdmins.map(a => a?.email).filter(Boolean);
+export async function emailSuperAdminsEngineerInRoom(
+  req,
+  engineerName,
+  pmName,
+  superAdmins = []
+) {
+  const toList = superAdmins.map((a) => a?.email).filter(Boolean);
   if (!toList.length) return { skipped: true, reason: "no superadmin emails" };
   return safeSend({
     to: toList,
@@ -810,7 +942,12 @@ export async function emailSuperAdminsEngineerInRoom(req, engineerName, pmName, 
 }
 
 /* -------- Staffs → Project completed -------- */
-export async function emailStaffsProjectCompleted(req, pmName, engineerName, staffEmails = []) {
+export async function emailStaffsProjectCompleted(
+  req,
+  pmName,
+  engineerName,
+  staffEmails = []
+) {
   const list = staffEmails.filter(Boolean);
   if (!list.length) return { skipped: true, reason: "no staff emails" };
 
@@ -843,11 +980,13 @@ function clientPmAssignedHtml(req, pmName) {
   const inner = `
     <h1 style="margin:0 0 10px 0;font-size:26px;color:${TEXT}">Your Project Manager is here</h1>
     <p style="margin:0 0 10px 0;color:${MUTED}">
-      <strong>${escapeHtml(pmName || "Your PM")}</strong> has been assigned to your project and will coordinate delivery and updates in the chat.
+      <strong>${escapeHtml(
+        pmName || "Your PM"
+      )}</strong> has been assigned to your project and will coordinate delivery and updates in the chat.
     </p>
     ${detailsTable(
       keyval("Project", req?.projectTitle || "Project") +
-      keyval("Project Manager", pmName || "PM")
+        keyval("Project Manager", pmName || "PM")
     )}
     ${button("Open Chat", CLIENT_CHAT_URL)}
     ${ctaBlock(
@@ -871,13 +1010,15 @@ function clientProjectSubmittedHtml(req, pmName, engineerName) {
   const inner = `
     <h1 style="margin:0 0 10px 0;font-size:26px;color:${TEXT}">Your project is ready for review</h1>
     <p style="margin:0 0 12px 0;color:${MUTED}">
-      We’ve marked <strong>${escapeHtml(req?.projectTitle || "your project")}</strong> as <strong>Submitted</strong>.
+      We’ve marked <strong>${escapeHtml(
+        req?.projectTitle || "your project"
+      )}</strong> as <strong>Submitted</strong>.
       ${pmName ? `Your PM <strong>${escapeHtml(pmName)}</strong>` : "Your PM"} will guide the final checks.
     </p>
     ${detailsTable(
       keyval("Project Manager", pmName || "PM") +
-      keyval("Engineer", engineerName || "Engineer") +
-      keyval("Status", "In Review")
+        keyval("Engineer", engineerName || "Engineer") +
+        keyval("Status", "In Review")
     )}
     ${button("Open Chat to Review", CLIENT_CHAT_URL)}
     <p style="margin:12px 0 0;color:${MUTED}">
@@ -899,7 +1040,11 @@ export async function emailClientPmAssigned(req, pmName) {
   });
 }
 
-export async function emailClientProjectSubmitted(req, pmName, engineerName) {
+export async function emailClientProjectSubmitted(
+  req,
+  pmName,
+  engineerName
+) {
   if (!req?.email) return { skipped: true, reason: "no client email" };
   return safeSend({
     to: req.email,
@@ -911,7 +1056,9 @@ export async function emailClientProjectSubmitted(req, pmName, engineerName) {
 // Simple, styled notification wrapper used by notify.service.js
 export async function emailNotifyUser(to, subject, body, link) {
   const inner = `
-    <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">${escapeHtml(subject || "Notification")}</h1>
+    <h1 style="margin:0 0 10px 0;font-size:22px;color:${TEXT}">${escapeHtml(
+      subject || "Notification"
+    )}</h1>
     <p style="margin:0 0 12px 0;color:${MUTED}">${escapeHtml(body || "")}</p>
     ${link ? button("Open", link) : ""}
   `;

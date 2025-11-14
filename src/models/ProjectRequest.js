@@ -26,6 +26,14 @@ const ProjectRequestSchema = new mongoose.Schema(
       engineer:     { score: { type: Number, min: 1, max: 5 }, comment: String },
       coordination: { score: { type: Number, min: 1, max: 5 }, comment: String },
     },
+
+    lastMeet: {
+      url:       { type: String },
+      eventId:   { type: String },
+      start:     { type: String },
+      end:       { type: String },
+      createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    },
   },
   { timestamps: true }
 );
